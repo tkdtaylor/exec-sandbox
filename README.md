@@ -39,10 +39,20 @@ echo '{"run":{"payload":"…","profile":{…},"tier":"bubblewrap","secret_refs":
 egress proxy + allowlist + vault.inject (proxy mode) + audit emission (ported from the
 tracer-bullet). **Deferred (v1):** Tier 2/3 (gVisor / Firecracker /
 Kata) behind the OCI seam, full seccomp profile, env-mode injection + wipe clock, SOCKS5
-proxy, resource cgroup limits, sandbox_identity attestation signatures. See
-[docs/CONTRACT.md](docs/CONTRACT.md).
+proxy, resource cgroup limits, sandbox_identity attestation signatures, **egress hardening
+(two-layer network filter — see below)**. See [docs/CONTRACT.md](docs/CONTRACT.md) and the
+scoping doc.
 
 ## Adapter seam & standards
 
 OCI Runtime Spec + Linux seccomp-BPF (+ WASI for a future WASM tier). Pluggable backends:
 bubblewrap (Tier 1, default), gVisor/runsc (Tier 2), Firecracker/Kata (Tier 3).
+
+**Egress hardening (v1) — reference architecture:** the current egress is a single-layer
+Unix-socket HTTP proxy + domain allowlist (the Tier-1 floor). For the v1 network-namespace
+egress filter, the reference is Alibaba **OpenSandbox OSEP-0001**'s two-layer default-deny
+model — Layer 1 DNS proxy (iptables `REDIRECT`), Layer 2 `nftables` filter, with graceful
+degradation to DNS-only when `CAP_NET_ADMIN` is unavailable (Apache-2.0). Evaluated as prior
+art: a **reference design, not an adopted dependency** — exec-sandbox
+stays a modular block (the OpenSandbox platform lacks pluggable policy-engine / external vault
+/ separated audit-trail). See `exec-sandbox.md` §1.
