@@ -1,7 +1,7 @@
 # Architecture Diagrams
 
 **Project:** exec-sandbox
-**Last updated:** 2026-06-18
+**Last updated:** 2026-06-18 (ADR-002: gVisor Tier-2 backend behind the tier seam)
 
 C4-structured Mermaid diagrams covering the system at progressively detailed levels (Context → Container → Component), plus the runtime sequence flow that shows how those pieces collaborate. See [overview.md](overview.md) for prose context, [decisions/](decisions/) for the ADRs referenced here, and [`../spec/architecture.md`](../spec/architecture.md) for the structured element catalog these diagrams render.
 
@@ -46,7 +46,7 @@ C4Container
     System_Boundary(boundary, "exec-sandbox process") {
         Container(cli, "exec-sandbox run", "Go / main package", "Reads RunRequest on stdin, orchestrates the run, writes result on stdout")
         Container(proxy, "Egress proxy", "Go / net/http on a Unix socket", "Domain allowlist + credential injection; the sandbox's only path out")
-        Container(sandbox, "bubblewrap sandbox", "bwrap --unshare-all", "Runs payload.sh with no network namespace; /proxy.sock bind-mounted in")
+        Container(sandbox, "isolation sandbox", "bwrap --unshare-all | runsc (gVisor)", "Runs payload.sh with no network namespace; /proxy.sock bind-mounted in. Tier selected by run.tier.")
     }
 
     System_Ext(vault, "vault")
@@ -57,7 +57,7 @@ C4Container
     Rel(cli, vault, "vault.inject", "Unix socket")
     Rel(cli, audit, "emit", "Unix socket")
     Rel(cli, proxy, "Starts, loads credentials, stops/wipes", "in-process")
-    Rel(cli, sandbox, "Runs payload, captures stdout/stderr/exit", "exec bwrap")
+    Rel(cli, sandbox, "Runs payload, captures stdout/stderr/exit", "exec bwrap | runsc")
     Rel(sandbox, proxy, "Outbound HTTP (only egress)", "Unix socket /proxy.sock")
     Rel(proxy, origin, "Forwards allowlisted request with injected credential", "HTTP")
 ```
@@ -72,8 +72,9 @@ C4Component
 
     Container_Boundary(boundary, "exec-sandbox") {
         Component(main, "main", "main.go", "CLI entry: parse argv, read stdin RunRequest, call Run(), write result")
-        Component(run, "Run()", "run.go", "Orchestration: allowlist parse, identity mint, audit emit, vault.inject loop, proxy start, bwrap exec, result assembly")
-        Component(bwrap, "bwrapArgv", "run.go", "Builds the Tier-1 bubblewrap argv (no network namespace)")
+        Component(run, "Run()", "run.go", "Orchestration: allowlist parse, identity mint, audit emit, vault.inject loop, proxy start, backend exec, result assembly")
+        Component(seam, "backendFor / Backend", "run.go", "Tier seam: selects bubblewrapBackend (bwrapArgv) or gvisorBackend by run.tier; unknown tier → error")
+        Component(gvisor, "gvisorBackend / gvisorOCISpec", "gvisor.go", "Builds an OCI bundle (empty netns, /proxy.sock only egress) and the runsc run argv")
         Component(ipc, "ipcCall / vaultInject / emit", "run.go", "Unix-socket JSON-lines IPC to vault and audit-trail")
         Component(egress, "EgressProxy", "proxy.go", "Allowlist enforcement + credential injection on a Unix socket")
     }
@@ -82,7 +83,8 @@ C4Component
     System_Ext(audit, "audit-trail")
 
     Rel(main, run, "Invokes", "Run(req)")
-    Rel(run, bwrap, "Builds argv", "")
+    Rel(run, seam, "Selects backend by tier", "backendFor(tier)")
+    Rel(seam, gvisor, "gvisor tier", "Backend.Argv")
     Rel(run, ipc, "vault.inject / emit", "")
     Rel(run, egress, "NewEgressProxy / SetCredential / Start / Stop / Wipe", "")
     Rel(ipc, vault, "inject", "Unix socket")
@@ -90,9 +92,9 @@ C4Component
 ```
 
 **Key contracts**
-- The sandbox has **no network namespace** (`bwrap --unshare-all`); `/proxy.sock` is the only egress. (ADR-001 D3)
+- The sandbox has **no network namespace** regardless of tier (`bwrap --unshare-all`, or the gVisor OCI spec's empty `network` namespace + `runsc --network=none`); `/proxy.sock` is the only egress. (ADR-001 D3, ADR-002)
 - exec-sandbox owns the network boundary + proxy + allowlist; vault owns credential injection. The proxy-mode credential **never** enters the sandbox. (ADR-001 D4/D5)
-- The `tier` seam selects the isolation backend; v0 wires bubblewrap only. (ADR-001 D7)
+- The `tier` seam (`backendFor`) selects the isolation backend; bubblewrap (Tier 1) and gVisor (Tier 2) are wired, Firecracker (Tier 3) returns `tier not implemented`. (ADR-001 D7, ADR-002)
 
 ---
 
@@ -105,7 +107,7 @@ sequenceDiagram
     participant Run as exec-sandbox Run()
     participant Vault as vault
     participant Proxy as Egress proxy
-    participant Box as bubblewrap sandbox
+    participant Box as isolation sandbox (bwrap | runsc)
     participant Audit as audit-trail
 
     Agent->>Run: RunRequest {payload, profile, tier, secret_refs} on stdin
@@ -122,7 +124,8 @@ sequenceDiagram
         end
     end
     Run->>Proxy: Start(proxy.sock)
-    Run->>Box: exec bwrap --unshare-all (payload.sh, /proxy.sock bind-mounted)
+    Run->>Run: backendFor(tier) → bubblewrap | gvisor (unknown → error)
+    Run->>Box: exec backend (bwrap --unshare-all, or runsc over an OCI bundle; payload.sh + /proxy.sock bind-mounted, no network)
     Box->>Proxy: outbound HTTP via /proxy.sock (only egress)
     Proxy->>Proxy: allowlist check; inject credential
     Proxy-->>Box: forwarded response (or 403 blocked / 502 no-route)
@@ -138,7 +141,7 @@ sequenceDiagram
 
 Add additional numbered sections (5., 6., …) for any of:
 
-- **Per-flow sequence diagrams** — e.g. the gVisor Tier-2 dispatch path once it lands (it should reuse this same sequence with the `bwrap` exec step replaced by `runsc`, preserving every other edge).
+- **Per-flow sequence diagrams** — the gVisor Tier-2 dispatch path reuses the flow in section 4 with the backend exec step covering both `bwrap` and `runsc` (every other edge is identical); split it into its own section only if the two paths diverge beyond the exec step.
 - **State machines** — if a subsystem grows explicit states with transitions.
 - **Deployment topology** — `C4Deployment` if the runtime layout becomes non-obvious.
 

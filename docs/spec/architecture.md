@@ -41,12 +41,12 @@ When the structure changes, both files update in the same commit.
 
 | Name | Technology | Responsibility | Source path | Depends on |
 |------|------------|----------------|-------------|------------|
-| exec-sandbox CLI | Go (`main` package) | Parse argv, read `RunRequest` on stdin, orchestrate the run, write result on stdout | `main.go`, `run.go` | Egress proxy, bubblewrap sandbox, vault, audit-trail |
+| exec-sandbox CLI | Go (`main` package) | Parse argv, read `RunRequest` on stdin, orchestrate the run, write result on stdout | `main.go`, `run.go` | Egress proxy, isolation sandbox, vault, audit-trail |
 | Egress proxy | Go `net/http` over a Unix socket | Enforce domain allowlist; inject credentials; forward allowlisted requests to the origin | `proxy.go` | Allowlisted origin |
-| bubblewrap sandbox | `bwrap --unshare-all` subprocess | Run `payload.sh` with no network namespace; only `/proxy.sock` bind-mounted for egress | (runtime; argv built in `run.go` `bwrapArgv`) | bubblewrap (`bwrap`), Egress proxy |
+| isolation sandbox | `bwrap --unshare-all` (Tier 1) or `runsc` over an OCI bundle (Tier 2), selected by `run.tier` | Run `payload.sh` with no network namespace; only `/proxy.sock` bind-mounted for egress | (runtime; argv/spec built in `run.go` `bwrapArgv` and `gvisor.go` `gvisorOCISpec`) | bubblewrap (`bwrap`) / gVisor (`runsc`), Egress proxy |
 
 **Invariants for this table**
-- All three containers run within (or as a subprocess of) the single `exec-sandbox` process; there is no separate deployable artifact. The Egress proxy and the bubblewrap sandbox are spawned by the CLI per run and torn down at the end.
+- All three containers run within (or as a subprocess of) the single `exec-sandbox` process; there is no separate deployable artifact. The Egress proxy and the isolation sandbox are spawned by the CLI per run and torn down at the end.
 - Every `Depends on` entry resolves to another row here or in Section 2.
 
 ---
@@ -56,8 +56,10 @@ When the structure changes, both files update in the same commit.
 | Container | Component | Source path | Responsibility | Depends on |
 |-----------|-----------|-------------|----------------|------------|
 | exec-sandbox CLI | `main` | `main.go` | CLI entry: argv check, read stdin, call `Run()`, marshal result to stdout | `Run()` |
-| exec-sandbox CLI | `Run()` | `run.go` | Orchestration core: allowlist parse, identity mint, audit emit, vault.inject loop, proxy start, bwrap exec, result assembly, teardown | `bwrapArgv`, `vaultInject`, `emit`, `EgressProxy` |
+| exec-sandbox CLI | `Run()` | `run.go` | Orchestration core: allowlist parse, identity mint, audit emit, vault.inject loop, proxy start, backend exec, result assembly, teardown | `backendFor`, `vaultInject`, `emit`, `EgressProxy` |
+| exec-sandbox CLI | `backendFor` / `Backend` | `run.go` | Tier seam: select `bubblewrapBackend` or `gvisorBackend` by `run.tier`; unknown tier → `tier not implemented` error | `bwrapArgv`, `gvisorBackend` |
 | exec-sandbox CLI | `bwrapArgv` | `run.go` | Build the Tier-1 bubblewrap argv (`--unshare-all`, no network namespace) | bubblewrap |
+| exec-sandbox CLI | `gvisorBackend` / `gvisorOCISpec` | `gvisor.go` | Build the Tier-2 OCI bundle (empty netns, `/proxy.sock` only egress) and the `runsc run` argv | gVisor (`runsc`) |
 | exec-sandbox CLI | `ipcCall` / `vaultInject` / `emit` | `run.go` | Unix-socket JSON-lines IPC to vault and audit-trail | vault, audit-trail |
 | exec-sandbox CLI | `netAllowlist` | `run.go` | Parse the egress allowlist from `profile.capabilities[NetConnect]` | — |
 | Egress proxy | `EgressProxy` | `proxy.go` | Allowlist enforcement, credential injection, request forwarding, credential wipe | Allowlisted origin |
@@ -68,7 +70,7 @@ When the structure changes, both files update in the same commit.
 
 - **No-network + proxy-only egress** spans the sandbox and proxy containers — the load-bearing security control. (ADR-001 D3/D4)
 - **Credential ownership split** — exec-sandbox owns the boundary; vault owns injection; the secret never enters the sandbox. (ADR-001 D5)
-- **Tier seam** — `tier = bubblewrap | gvisor | firecracker`; v0 wires bubblewrap only; new backends plug in without changing the `run()` contract. (ADR-001 D7)
+- **Tier seam** — `tier = bubblewrap | gvisor | firecracker`, dispatched by `backendFor`; bubblewrap (Tier 1) and gVisor/runsc (Tier 2) are wired, Firecracker (Tier 3) returns `tier not implemented`; backends plug in without changing the `run()` contract. (ADR-001 D7, ADR-002)
 - **JSON-lines Unix-socket IPC** is the single convention for both external blocks (`ipcCall`). (ADR-001 D2)
 
 ---

@@ -22,7 +22,7 @@ dispatch point so higher tiers slot in **without changing the `run()` contract**
 
 | # | Work | Status |
 |---|------|--------|
-| 1 | **Tier 2: gVisor (`runsc`) backend** behind the `tier` seam — `tier=="gvisor"` runs via runsc OCI, same contract, same no-network + proxy-only egress + audit. | backlog (task 001) |
+| 1 | **Tier 2: gVisor (`runsc`) backend** behind the `tier` seam — `tier=="gvisor"` runs via runsc OCI, same contract, same no-network + proxy-only egress + audit. | ✅ shipped (task 001, ADR-002) |
 | — | Tier 3: Firecracker / Kata (hardware isolation) for highest-risk actions. | future |
 | — | Enforce `profile.limits` (cpu/mem/disk/timeout) — accepted but not enforced in v0. | future |
 | — | Signed `sandbox_identity.attestation` (v0 uses random bytes). | future |
