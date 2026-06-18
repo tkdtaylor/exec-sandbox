@@ -52,7 +52,8 @@ survives the process.
     "payload":     string,            // shell script run as payload.sh
     "profile":     object,            // capabilities + limits; see below
     "tier":        string,            // "bubblewrap" | "gvisor" wired; "firecracker" → tier not implemented
-    "secret_refs": [ string ]         // opaque vault handles
+    "secret_refs": [ string ],        // opaque vault handles
+    "workdir":     string             // optional host dir → bind-mounted rw at /work, cwd=/work; "" → no mount
   },
   "wiring": {
     "vault_socket":   string,         // Unix socket path for vault.inject ("" → skip)
@@ -68,6 +69,15 @@ survives the process.
 `NetConnect` entries: `{ "type": "NetConnect", "allowlist": [ "host:port", … ] }` — the port is
 stripped to derive the egress allowlist. Other capability types (e.g. `FileRead{paths}`) are part
 of the v1 contract but not consumed yet.
+
+`run.workdir` (ADR 004) is the **writable working-directory** input: a host path that, when
+non-empty, is bind-mounted **read-write** at `/work` and becomes the payload's cwd (validated
+before spawn — must be an existing directory; a bad path is a hard `{error}`). It is distinct from
+`FileRead{paths}`: `run.workdir` is a single read-**write** working dir at a fixed mountpoint;
+`FileRead{paths}` is the (still-unimplemented) read-**only** list-of-paths capability. They are
+complementary, not interchangeable — a future `FileRead` implementation mounts paths read-only and
+does not collide with `run.workdir`. Empty/absent `run.workdir` ⇒ no `/work` mount (backward
+compatible).
 
 `profile.limits` **is enforced** (parsed by `parseLimits` into the `Limits` struct):
 

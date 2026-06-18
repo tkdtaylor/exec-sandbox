@@ -5,17 +5,30 @@ tracer-bullet (A1/A2/A3).
 
 ## run(payload, profile, tier, secret_refs) -> result
 ```
+payload = shell script run as /payload.sh
 profile = { capabilities:[ {type:NetConnect, allowlist:["host:443"]},
                             {type:FileRead, paths:[…]}, … ],
             limits:{ cpu_count, memory_mb, pids, disk_mb, timeout_sec } }   # enforced — see below
 tier    = bubblewrap | gvisor | firecracker        # bubblewrap + gvisor wired; firecracker → "tier not implemented"
 secret_refs = [ handle ]                            # opaque; exec-sandbox calls vault.inject
+workdir = host path                                 # optional; "" → no mount (see below)
 
 result = { stdout, stderr, exit_code,
            sandbox_status:{ sandbox_id, tier, duration_ms, secrets_injected:[…],
                             status,                 # "clean" | "timeout"
                             limits:{ cpu_count, memory_mb, pids, disk_mb, timeout_sec, degraded:[…] } } }
 ```
+
+## Writable working directory (`run.workdir`)
+Optional host path (ADR 004). When non-empty, the named host directory is bind-mounted
+**read-write** at `/work` inside the sandbox and the payload's cwd is set to `/work` — the one
+writable host surface (everything else stays read-only and the network stays unshared). bwrap
+applies it as `--bind <workdir> /work --chdir /work`; gVisor as a writable OCI `/work` bind mount
+(`options` without `ro`) + `process.cwd = "/work"`. The path is validated before spawn — it must be
+an existing directory — and a bad path is a hard `{error}` (no silent fall-back). When empty/absent
+there is no `/work` mount and behavior is exactly as before (backward compatible). This is the
+**writable** host-path mechanism; the read-only `FileRead{paths}` capability (still unimplemented)
+is its complement, not a substitute — see `configuration.md`.
 
 ## Resource limits (`profile.limits`)
 Enforced on every wired tier (ADR 003). `cpu_count` → `taskset` CPU affinity; `memory_mb` →

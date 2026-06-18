@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -26,6 +27,7 @@ type RunRequest struct {
 		Profile    map[string]any `json:"profile"`
 		Tier       string         `json:"tier"`
 		SecretRefs []string       `json:"secret_refs"`
+		Workdir    string         `json:"workdir"` // host dir bind-mounted writable at /work; "" → no mount (ADR 004)
 	} `json:"run"`
 	Wiring struct {
 		VaultSocket   string               `json:"vault_socket"`
@@ -42,6 +44,14 @@ type RunRequest struct {
 func Run(req RunRequest) map[string]any {
 	allowlist := netAllowlist(req.Run.Profile)
 	lim := parseLimits(req.Run.Profile)
+
+	// Resolve the optional writable working directory before any side effect (proxy/vault): a
+	// malformed run.workdir fails loud here, never silently falls back to a no-mount run (ADR 004).
+	workdir, err := validateWorkdir(req.Run.Workdir)
+	if err != nil {
+		return map[string]any{"error": err.Error()}
+	}
+
 	sandboxID := "sbx-" + randHex(6)
 	sandboxIdentity := map[string]any{"sandbox_id": sandboxID, "attestation": randHex(16)}
 	emit(req.Wiring.AuditSocket, map[string]any{
@@ -98,7 +108,7 @@ func Run(req RunRequest) map[string]any {
 	if err != nil {
 		return map[string]any{"error": err.Error()}
 	}
-	argv, cleanup, degrades, err := backend.Argv(scriptPath, proxySock, lim)
+	argv, cleanup, degrades, err := backend.Argv(scriptPath, proxySock, workdir, lim)
 	if cleanup != nil {
 		defer cleanup()
 	}
@@ -193,7 +203,7 @@ func limitsReport(lim Limits, degraded []string) map[string]any {
 // secondary cap that the host can't enforce is returned in degrades (warn + continue), never a
 // hard error; an inability to enforce a load-bearing cap is returned as err.
 type Backend interface {
-	Argv(scriptPath, proxySock string, lim Limits) (argv []string, cleanup func(), degrades []degrade, err error)
+	Argv(scriptPath, proxySock, workdir string, lim Limits) (argv []string, cleanup func(), degrades []degrade, err error)
 }
 
 // backendFor selects the isolation backend for a tier. "" and "bubblewrap" select Tier-1
@@ -213,7 +223,7 @@ func backendFor(tier string) (Backend, error) {
 // bubblewrapBackend is the Tier-1 isolation substrate.
 type bubblewrapBackend struct{}
 
-func (bubblewrapBackend) Argv(scriptPath, proxySock string, lim Limits) ([]string, func(), []degrade, error) {
+func (bubblewrapBackend) Argv(scriptPath, proxySock, workdir string, lim Limits) ([]string, func(), []degrade, error) {
 	var degrades []degrade
 
 	// disk_mb → tmpfs --size on /tmp (the only writable layer). Reliably size-cappable on tmpfs;
@@ -234,7 +244,7 @@ func (bubblewrapBackend) Argv(scriptPath, proxySock string, lim Limits) ([]strin
 		return nil, nil, nil, err
 	}
 
-	argv := bwrapArgv(scriptPath, proxySock, diskBytes, inner)
+	argv := bwrapArgv(scriptPath, proxySock, workdir, diskBytes, inner)
 
 	// cpu_count → taskset affinity prefix on the whole argv (inherited into the sandbox).
 	if prefix, d := cpuAffinityPrefix(lim.CPUCount); d != nil {
@@ -248,8 +258,10 @@ func (bubblewrapBackend) Argv(scriptPath, proxySock string, lim Limits) ([]strin
 // bwrapArgv builds the Tier-1 sandbox: --unshare-all removes the network namespace entirely; the
 // bind-mounted proxy.sock is the only egress. diskBytes > 0 size-caps the writable /tmp tmpfs;
 // finalCmd is the in-sandbox command (the payload shell, optionally wrapped by prlimit for the
-// memory/pids rlimits — see ADR 003).
-func bwrapArgv(scriptPath, proxySock string, diskBytes int, finalCmd []string) []string {
+// memory/pids rlimits — see ADR 003). When workdir is non-empty it is bind-mounted READ-WRITE at
+// /work (the one writable host surface) and becomes the payload's cwd; system dirs stay read-only
+// and the network stays unshared (ADR 004).
+func bwrapArgv(scriptPath, proxySock, workdir string, diskBytes int, finalCmd []string) []string {
 	argv := []string{"bwrap",
 		"--ro-bind", "/usr", "/usr",
 		"--ro-bind", "/etc", "/etc",
@@ -269,6 +281,11 @@ func bwrapArgv(scriptPath, proxySock string, diskBytes int, finalCmd []string) [
 		if _, err := os.Stat(d); err == nil {
 			argv = append(argv, "--ro-bind", d, d)
 		}
+	}
+	// Writable working directory: --bind (NOT --ro-bind) makes /work read-write, --chdir sets it as
+	// the payload's cwd. This is the only writable host mount; the no-network invariant is untouched.
+	if workdir != "" {
+		argv = append(argv, "--bind", workdir, "/work", "--chdir", "/work")
 	}
 	return append(argv, finalCmd...)
 }
@@ -358,4 +375,28 @@ func prefix(s string, n int) string {
 		return s
 	}
 	return s[:n]
+}
+
+// validateWorkdir resolves the optional host working directory bind-mounted writable at /work
+// (ADR 004). A blank path means "no workdir mount" — it returns ("", nil), preserving today's
+// behavior. A non-blank path is canonicalized to absolute (filepath.Abs) and must be an EXISTING
+// directory; a missing path or a non-directory is a hard error (the run does not start). This is
+// the no-silent-fall-back stance and mirrors agent-builder's validateWorktree (trim → abs → stat
+// → IsDir).
+func validateWorkdir(path string) (string, error) {
+	if strings.TrimSpace(path) == "" {
+		return "", nil
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("invalid run.workdir: %v", err)
+	}
+	info, err := os.Stat(abs)
+	if err != nil {
+		return "", fmt.Errorf("invalid run.workdir: %v", err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("invalid run.workdir: not a directory: %s", abs)
+	}
+	return abs, nil
 }

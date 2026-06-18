@@ -39,8 +39,9 @@ Execution-shaping fields under `run`:
 |-----|------|---------|--------|
 | `run.tier` | string | `""`/`bubblewrap` → Tier-1 (bwrap) | `bubblewrap \| gvisor \| firecracker`. `""`/`bubblewrap` runs bwrap, `gvisor` runs runsc; `firecracker` (or any other value) returns `{error: "tier not implemented: <tier>"}`. The value is echoed into `sandbox_status.tier` and the spawn audit context. |
 | `run.profile.capabilities[NetConnect].allowlist` | `[string]` ("host:port") | `[]` | The egress allowlist (ports stripped). Hosts not listed are `403`-blocked by the proxy. |
-| `run.profile.capabilities` (other types) | array | — | Part of the v1 contract; `FileRead{paths}` etc. not yet enforced. |
+| `run.profile.capabilities` (other types) | array | — | Part of the v1 contract; `FileRead{paths}` (read-**only** host paths) not yet enforced. The read-**write** host dir is `run.workdir` below, not `FileRead`. |
 | `run.profile.limits` | object | — | **Enforced** resource caps (ADR 003). See the per-field table below. |
+| `run.workdir` | string (host path) | `""` | **Writable working directory** (ADR 004). Non-empty → the host dir is bind-mounted **read-write** at `/work` and the payload's cwd is `/work`; validated before spawn (must be an existing directory, else a hard `{error}`). Empty → no `/work` mount (backward compatible). The one writable host surface — system dirs stay read-only, the network stays unshared. |
 | `run.secret_refs` | `[string]` | `[]` | Opaque vault handles to inject at spawn. |
 
 `run.profile.limits` fields (each optional; missing/zero/non-positive ⇒ that cap is not applied):
@@ -105,6 +106,11 @@ Defaults are **safe and closed**: an empty `vault_socket`/`audit_socket` disable
 integration rather than failing; an empty allowlist blocks all egress (default-deny); the
 sandbox always runs with no network regardless of any field. Nothing in the request can widen
 the sandbox's network access beyond the proxy + allowlist.
+
+`run.workdir` defaults to `""` — **no writable host mount**. A run only ever gains a writable host
+surface when the caller explicitly names a directory, and even then it is the single `/work`
+mount; the rootfs and system dirs stay read-only and the network stays unshared regardless. A
+malformed `run.workdir` fails the run loudly rather than silently running without the mount.
 
 `profile.limits` defaults to "no limit" per field — an unset cap is simply not applied (limits
 *narrow* the sandbox; they never widen it). The `cpu_count` and `disk_mb` caps are **secondary**

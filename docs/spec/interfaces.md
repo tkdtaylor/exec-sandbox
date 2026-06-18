@@ -78,37 +78,51 @@ contract.
 The **tier seam point**. Maps `req.run.tier` to an isolation `Backend`: `""` and `"bubblewrap"`
 → the bubblewrap backend; `"gvisor"` → the runsc backend; any other tier → a
 `tier not implemented: <tier>` error (no silent fall-back). `Run()` calls `backendFor` and then
-`backend.Argv(scriptPath, proxySock)` to obtain the spawn argv. A new isolation backend is added by
-implementing `Backend` and registering it here, preserving the no-network + proxy-only-egress
-invariant and the captured stdout/stderr/exit contract.
+`backend.Argv(scriptPath, proxySock, workdir, lim)` to obtain the spawn argv. A new isolation
+backend is added by implementing `Backend` and registering it here, preserving the no-network +
+proxy-only-egress invariant and the captured stdout/stderr/exit contract.
 
 ### `Backend` interface (`run.go`)
 
 ```go
 type Backend interface {
-    Argv(scriptPath, proxySock string) (argv []string, cleanup func(), err error)
+    Argv(scriptPath, proxySock, workdir string, lim Limits) (argv []string, cleanup func(), degrades []degrade, err error)
 }
 ```
 
-Given the on-host payload script and proxy socket, a backend returns the `os/exec` argv to spawn,
-an optional `cleanup` func run after the process exits (nil if nothing to clean up), and an error
-if it could not prepare the run. Two implementations exist: `bubblewrapBackend` (returns the
-`bwrapArgv` slice; no cleanup) and `gvisorBackend` (writes an OCI bundle to a temp dir, returns the
-`runsc run` argv, and a cleanup that removes the bundle).
+Given the on-host payload script, proxy socket, optional writable working directory (`workdir`;
+`""` ⇒ no `/work` mount), and the parsed resource `Limits`, a backend returns the `os/exec` argv to
+spawn, an optional `cleanup` func run after the process exits (nil if nothing to clean up), the list
+of `degrades` (secondary caps the host could not enforce — ADR 003), and an error if it could not
+prepare the run. Two implementations exist: `bubblewrapBackend` (returns the `bwrapArgv` slice; no
+cleanup) and `gvisorBackend` (writes an OCI bundle to a temp dir, returns the `runsc run` argv, and
+a cleanup that removes the bundle).
 
-### `bwrapArgv(scriptPath, proxySock string) []string` (`run.go`)
+### `bwrapArgv(scriptPath, proxySock, workdir string, diskBytes int, finalCmd []string) []string` (`run.go`)
 
 Builds the Tier-1 bubblewrap argv (`--unshare-all`, minimal read-only root, `/payload.sh` and
-`/proxy.sock` bind-mounted). Used by `bubblewrapBackend`.
+`/proxy.sock` bind-mounted; `diskBytes > 0` size-caps the `/tmp` tmpfs; `finalCmd` is the in-sandbox
+command). When `workdir` is non-empty it appends `--bind <workdir> /work --chdir /work` — the host
+dir mounted **read-write** (not `--ro-bind`) as the payload's cwd (ADR 004). Used by
+`bubblewrapBackend`.
 
 ### `gvisorOCISpec(scriptPath, proxySock string) map[string]any` (`gvisor.go`)
 
-Builds the OCI runtime spec (`config.json` contents) for the gVisor backend. A pure function of the
-on-host paths (unit-testable without runsc). Declares a `network` namespace with no path (a fresh
-empty netns — no host/bridged networking), a read-only root with the host system dirs bind-mounted
-read-only, and the proxy socket as the only egress bind-mount at `/proxy.sock`. The `runsc run`
-invocation adds `--network=none` (belt-and-suspenders no-network), `--host-uds=open` (lets the
-payload connect to the existing proxy socket but not create host sockets), and `--ignore-cgroups`.
+Builds the base OCI runtime spec (`config.json` contents) for the gVisor backend. A pure function of
+the on-host paths (unit-testable without runsc). Declares a `network` namespace with no path (a
+fresh empty netns — no host/bridged networking), a read-only root with the host system dirs
+bind-mounted read-only, and the proxy socket as the only egress bind-mount at `/proxy.sock`. The
+`runsc run` invocation adds `--network=none` (belt-and-suspenders no-network), `--host-uds=open`
+(lets the payload connect to the existing proxy socket but not create host sockets), and
+`--ignore-cgroups`. `applyLimitsToOCISpec` and `applyWorkdirToOCISpec` mutate this base in place.
+
+### `applyWorkdirToOCISpec(spec map[string]any, workdir string)` (`gvisor.go`)
+
+Mutates the OCI spec in place to mount `workdir` **read-write** at `/work` (mount `options` omit
+`ro`) and set `process.cwd = "/work"` (ADR 004). A no-op when `workdir` is empty, so the base spec —
+read-only rootfs/system dirs, cwd `"/"` — is unchanged and backward-compatible. The `/work` mount is
+the only writable host-path bind; the empty network namespace is untouched. Mirrors the shape of
+`applyLimitsToOCISpec`.
 
 ### `EgressProxy` (`proxy.go`)
 

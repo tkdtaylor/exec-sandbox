@@ -17,7 +17,7 @@ type gvisorBackend struct{}
 // `runsc run` argv that executes it, plus a cleanup func that removes the bundle. runsc must be
 // on PATH at run time; its absence surfaces as a spawn error (exit_code 127), never a silent
 // bubblewrap fall-back.
-func (gvisorBackend) Argv(scriptPath, proxySock string, lim Limits) ([]string, func(), []degrade, error) {
+func (gvisorBackend) Argv(scriptPath, proxySock, workdir string, lim Limits) ([]string, func(), []degrade, error) {
 	bundle, err := os.MkdirTemp("", "exec-sandbox-oci-")
 	if err != nil {
 		return nil, nil, nil, err
@@ -33,6 +33,9 @@ func (gvisorBackend) Argv(scriptPath, proxySock string, lim Limits) ([]string, f
 	// memory_mb/pids → OCI process.rlimits (the gVisor sentry honors these directly, so they are
 	// enforced even under --ignore-cgroups); disk_mb → the /tmp tmpfs size= option (ADR 003).
 	spec := gvisorOCISpec(scriptPath, proxySock)
+	// Mount the host working directory writable at /work and set cwd=/work (ADR 004); no-op when
+	// workdir is empty, leaving the base spec (and its backward-compatible behavior) unchanged.
+	applyWorkdirToOCISpec(spec, workdir)
 	degrades := applyLimitsToOCISpec(spec, lim)
 	b, err := json.MarshalIndent(spec, "", "  ")
 	if err != nil {
@@ -69,6 +72,26 @@ func (gvisorBackend) Argv(scriptPath, proxySock string, lim Limits) ([]string, f
 		argv = append(prefix, argv...)
 	}
 	return argv, cleanup, degrades, nil
+}
+
+// applyWorkdirToOCISpec mounts the host working directory writable at /work and sets the payload's
+// cwd to /work, in place (ADR 004). It is a no-op when workdir is empty, so the base spec — a
+// read-only rootfs/system-dirs and cwd "/" — is byte-for-byte unchanged and prior behavior is
+// preserved. The /work mount is the ONLY writable bind of a host path: its options omit "ro"
+// (unlike the read-only /usr, /etc, /payload.sh binds), while everything else stays read-only and
+// the empty network namespace (no egress) is untouched.
+func applyWorkdirToOCISpec(spec map[string]any, workdir string) {
+	if workdir == "" {
+		return
+	}
+	mounts, _ := spec["mounts"].([]map[string]any)
+	spec["mounts"] = append(mounts, map[string]any{
+		"destination": "/work", "type": "bind", "source": workdir,
+		"options": []string{"rbind"}, // writable: no "ro" option (cf. the ro system-dir mounts)
+	})
+	if proc, ok := spec["process"].(map[string]any); ok {
+		proc["cwd"] = "/work"
+	}
 }
 
 // applyLimitsToOCISpec adds the resource caps to an OCI spec in place: RLIMIT_AS (memory_mb) and
