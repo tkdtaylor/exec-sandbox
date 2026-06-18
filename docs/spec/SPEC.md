@@ -1,0 +1,83 @@
+# exec-sandbox — Authoritative Spec
+
+**Project:** exec-sandbox
+**Last updated:** 2026-06-18
+
+## What this directory is
+
+`docs/spec/` is the **authoritative current-state snapshot** of exec-sandbox. It answers the question:
+
+> "If the code were deleted tomorrow, what would I need to write down to rebuild it?"
+
+The spec is dual-natured:
+
+- **Output of current sessions** — every completed task that changes externally-observable behavior, the data model, an interface, or configuration must update the relevant spec file in the same commit.
+- **Input to future sessions** — used for onboarding, drift audits against the code, and (in the limit) regenerating the codebase from scratch.
+
+The code is one *realization* of this spec. If the spec and code disagree, one of them is wrong — fix the wrong one in that same change.
+
+## Spec vs. ADRs vs. overview
+
+| Doc | Purpose | Lifecycle |
+|-----|---------|-----------|
+| [`docs/spec/`](.) | What the system **does and is** today | Snapshot — supersede in place, never append |
+| [`docs/architecture/decisions/`](../architecture/decisions/) | **Why** decisions were made | Append-only history; ADRs can be superseded by later ADRs |
+| [`docs/architecture/overview.md`](../architecture/overview.md) | Narrative tour of the system | Snapshot, but optimized for human reading |
+| [`docs/architecture/diagrams.md`](../architecture/diagrams.md) | Visual structure and flows | Snapshot, part of the spec |
+
+## The seven sub-files
+
+| File | Covers |
+|------|--------|
+| [behaviors.md](behaviors.md) | What the system does — the `run()` flow, audit emission, proxy egress, vault.inject |
+| [architecture.md](architecture.md) | C4 element catalog — persons, systems, containers, components |
+| [data-model.md](data-model.md) | RunRequest/response JSON shapes, audit event shape, in-memory proxy state |
+| [interfaces.md](interfaces.md) | The `run` CLI surface + the vault/audit IPC contracts |
+| [configuration.md](configuration.md) | The wiring fields: vault_socket, audit_socket, origin_map, injection_mode |
+| [fitness-functions.md](fitness-functions.md) | Executable architectural invariants (no `--share-net`; credential never in sandbox) |
+
+## Maintenance rules
+
+1. **Update in the same commit as the code change.**
+2. **Supersede in place. Never append.** The ADR carries history; the spec carries current truth.
+3. **No future tense.** Roadmap and planned work live in `docs/plans/` and `docs/tasks/`.
+4. **No implementation rationale.** "We chose X because Y" belongs in an ADR.
+5. **Audit drift periodically** with the `architect` agent's drift-audit mode.
+
+## Project summary
+
+exec-sandbox is the OS execution-isolation block of the secure-agent ecosystem. It is a
+single-binary Go CLI (`exec-sandbox run`) that reads a JSON `RunRequest` on stdin and runs the
+supplied agent-generated payload in a sandbox with **no network**. The sandbox's only path out
+is a host-side egress proxy on a Unix socket that enforces a domain allowlist and injects
+credentials obtained from `vault`. In proxy mode the credential value never enters the sandbox.
+spawn/inject/exit events are emitted to `audit-trail`. v0 implements Tier-1 isolation
+(bubblewrap) only, behind a `tier` seam designed to accept gVisor and Firecracker later without
+changing the `run()` contract.
+
+## Top-level invariants
+
+- **No network in the sandbox.** The payload runs under `bwrap --unshare-all` — no network
+  namespace. There is no `--share-net` and no direct route out. Enforced in code by `bwrapArgv`
+  (`run.go`); proposed as fitness rule F-001.
+- **The bind-mounted proxy socket is the only egress.** `/proxy.sock` is the sole path out of
+  the sandbox. The egress proxy enforces the domain allowlist; non-allowlisted hosts get `403`.
+- **exec-sandbox owns the network boundary; vault owns credential injection.** exec-sandbox
+  never mints or stores credentials — it presents `{handle, sandbox_identity}` to `vault.inject`
+  and loads what vault returns.
+- **A proxy-mode credential value never enters the sandbox** — not in env, args, or stdout. It
+  lives only on the host-side proxy and is wiped at teardown. Proposed as fitness rule F-002.
+- **The `run()` contract is stable across tiers.** `run(payload, profile, tier, secret_refs) ->
+  {stdout, stderr, exit_code, sandbox_status}` does not change when a new isolation backend is
+  added behind the `tier` seam.
+
+## Non-goals
+
+- **Not credential storage or minting** — that is vault's responsibility.
+- **Not audit storage or querying** — exec-sandbox emits events and forgets them.
+- **Not a generic dev container or general process runner** — it is the execution-box profile
+  for agent-generated code.
+- **No persistent state** — every run is ephemeral (fresh temp dir, fresh proxy, wiped at
+  teardown).
+- **Tier 2/3 not yet implemented** — `gvisor` / `firecracker` are accepted by the `tier` field
+  but only `bubblewrap` is wired in v0.
