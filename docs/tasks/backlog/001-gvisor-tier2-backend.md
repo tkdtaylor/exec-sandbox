@@ -2,7 +2,7 @@
 
 **Project:** exec-sandbox
 **Created:** 2026-06-18
-**Status:** backlog
+**Status:** ready
 
 ## Goal
 
