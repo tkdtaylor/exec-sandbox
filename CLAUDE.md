@@ -105,8 +105,8 @@ here: new isolation backends plug in behind it without changing the `run()` cont
 
 Every task lives on its own branch (or worktree under concurrent sessions). Working directly on `main` is blocked by the `no-commit-on-main.py` hook — `scripts/start-task.sh` is how you pick the right isolation for the moment.
 
-> Note: this repo's default branch is `master`. The hooks treat the checked-out default branch
-> as protected; substitute `master` wherever the workflow says `main`.
+> Note: this repo's default branch is `main`. The hooks treat the checked-out default branch
+> as protected.
 
 1. Start each session by reading the relevant task file (including its **Verification plan**) and its test spec
 2. Check `docs/architecture/overview.md` for system context
@@ -118,7 +118,7 @@ Every task lives on its own branch (or worktree under concurrent sessions). Work
    The executor commits at status **🟡 (code merged)** on the task branch.
 5. After the executor returns, use **spec-verifier** on the task — it returns APPROVE or BLOCK based on per-assertion evidence
 6. If spec-verifier APPROVEs **and** the verification plan's L5/L6 evidence is recorded (validation harness output or runtime observation), promote the row to **✅ (verified)** in `coverage-tracker.md` in a **separate commit** titled `verify: confirm task NNN — <evidence>` (still on the task branch)
-7. **Merge to the default branch** when ready: `git checkout master && git merge task/NNN-<slug>`. The `auto-cleanup-merge.py` hook then deletes the task branch and removes the worktree (if any) automatically. If the merge introduced conflicts or you want to keep the branch around for reference, the hook surfaces a note and leaves it in place.
+7. **Merge to the default branch** when ready: `git checkout main && git merge task/NNN-<slug>`. The `auto-cleanup-merge.py` hook then deletes the task branch and removes the worktree (if any) automatically. If the merge introduced conflicts or you want to keep the branch around for reference, the hook surfaces a note and leaves it in place.
 8. **Commit after each milestone** — never start the next task without committing the current one first. (No remote is configured; this repo is local-only during bootstrap, so there is nothing to push.)
 
 The separation between the task branch and the default branch is the load-bearing rule for multi-session safety. Two sessions on different `task/*` branches can work in parallel without ever stepping on each other's files; two sessions both editing the default branch cannot. The hook is the floor — the discipline is the goal.
@@ -139,7 +139,7 @@ All commits below land on the **task branch** (`task/NNN-<slug>`), never on the 
 | Task verified (✅) | `coverage-tracker.md` row promoted from 🟡 → ✅ with `Verified by` column filled (harness command + final assertion, or operator observation) | `verify: confirm task NNN — <evidence>` | task branch |
 | Diagram updated | `docs/architecture/diagrams.md` (with date bump at top) | `docs: refresh diagrams — <what changed>` | task branch (or `[allow-main]` for standalone doc fixes) |
 | Spec rewritten standalone | `docs/spec/<file>.md` | `spec: <what changed and why now>` | task branch (or `[allow-main]` for standalone doc fixes) |
-| Merged into default branch | (after `git merge task/NNN-<slug>` on `master`) | (uses the default `Merge branch …` message) | `master` |
+| Merged into default branch | (after `git merge task/NNN-<slug>` on `main`) | (uses the default `Merge branch …` message) | `main` |
 
 After each milestone:
 ```bash
