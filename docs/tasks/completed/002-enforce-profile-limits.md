@@ -1,6 +1,6 @@
 # Task 002: enforce `profile.limits` in `run()`
 
-**Status:** 🟡 in progress
+**Status:** 🟡 code merged
 **Branch:** `task/002-enforce-profile-limits`
 **Spec:** [`docs/tasks/test-specs/002-enforce-profile-limits-test-spec.md`](../test-specs/002-enforce-profile-limits-test-spec.md)
 **ADR:** [`docs/architecture/decisions/003-profile-limits-enforcement.md`](../../architecture/decisions/003-profile-limits-enforcement.md)

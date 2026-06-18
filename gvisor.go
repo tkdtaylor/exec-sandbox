@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 )
@@ -16,33 +17,37 @@ type gvisorBackend struct{}
 // `runsc run` argv that executes it, plus a cleanup func that removes the bundle. runsc must be
 // on PATH at run time; its absence surfaces as a spawn error (exit_code 127), never a silent
 // bubblewrap fall-back.
-func (gvisorBackend) Argv(scriptPath, proxySock string) ([]string, func(), error) {
+func (gvisorBackend) Argv(scriptPath, proxySock string, lim Limits) ([]string, func(), []degrade, error) {
 	bundle, err := os.MkdirTemp("", "exec-sandbox-oci-")
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	cleanup := func() { os.RemoveAll(bundle) }
 
 	rootfs := filepath.Join(bundle, "rootfs")
 	if err := os.MkdirAll(rootfs, 0o700); err != nil {
 		cleanup()
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
+	// memory_mb/pids → OCI process.rlimits (the gVisor sentry honors these directly, so they are
+	// enforced even under --ignore-cgroups); disk_mb → the /tmp tmpfs size= option (ADR 003).
 	spec := gvisorOCISpec(scriptPath, proxySock)
+	degrades := applyLimitsToOCISpec(spec, lim)
 	b, err := json.MarshalIndent(spec, "", "  ")
 	if err != nil {
 		cleanup()
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	if err := os.WriteFile(filepath.Join(bundle, "config.json"), b, 0o600); err != nil {
 		cleanup()
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	// runsc consumes the bundle by directory. --network=none is belt-and-suspenders with the
 	// empty network namespace in the spec; both express the no-network invariant. --ignore-cgroups
-	// lets the run proceed without cgroup write access (no resource limits are configured in v1).
+	// lets the run proceed without cgroup write access; resource caps are applied via the OCI
+	// process.rlimits and tmpfs size (above), which the sentry enforces without host cgroups.
 	// --host-uds=open lets the sandboxed payload connect() to an EXISTING host Unix socket (the
 	// bind-mounted proxy socket) but never create new ones. The proxy socket is the only host UDS
 	// bind-mounted in, so this preserves the invariant: the proxy is the sole egress path.
@@ -54,7 +59,60 @@ func (gvisorBackend) Argv(scriptPath, proxySock string) ([]string, func(), error
 		argv = append(argv, "--rootless")
 	}
 	argv = append(argv, "run", "--bundle", bundle, containerID)
-	return argv, cleanup, nil
+
+	// cpu_count → taskset affinity prefix on the runsc argv. gVisor virtualizes the in-box cpu
+	// view, so cpu_count is verified host-side (this argv record) rather than in-box (ADR 003 /
+	// agent-builder ADR 028).
+	if prefix, d := cpuAffinityPrefix(lim.CPUCount); d != nil {
+		degrades = append(degrades, *d)
+	} else if prefix != nil {
+		argv = append(prefix, argv...)
+	}
+	return argv, cleanup, degrades, nil
+}
+
+// applyLimitsToOCISpec adds the resource caps to an OCI spec in place: RLIMIT_AS (memory_mb) and
+// RLIMIT_NPROC (pids) as process.rlimits, and a size= option on the writable /tmp tmpfs (disk_mb).
+// disk_mb degrades (warn + continue) when the writable layer can't be size-capped (ADR 003). Zero
+// limits add nothing, so the base spec is byte-for-byte unchanged when no limits are requested.
+func applyLimitsToOCISpec(spec map[string]any, lim Limits) []degrade {
+	var degrades []degrade
+	proc, _ := spec["process"].(map[string]any)
+	var rlimits []map[string]any
+	if lim.MemoryMB > 0 {
+		bytes := uint64(lim.MemoryMB) * 1024 * 1024
+		rlimits = append(rlimits, map[string]any{"type": "RLIMIT_AS", "hard": bytes, "soft": bytes})
+	}
+	if lim.PidsLimit > 0 {
+		n := uint64(lim.PidsLimit)
+		rlimits = append(rlimits, map[string]any{"type": "RLIMIT_NPROC", "hard": n, "soft": n})
+	}
+	if len(rlimits) > 0 && proc != nil {
+		proc["rlimits"] = rlimits
+	}
+	if lim.DiskMB > 0 {
+		if diskQuotaSupported() {
+			applyTmpfsSize(spec, "/tmp", lim.DiskMB)
+		} else {
+			degrades = append(degrades, degrade{"disk_mb",
+				"disk_mb limit not enforced: writable-layer size quota unsupported on this host; running without disk quota"})
+		}
+	}
+	return degrades
+}
+
+// applyTmpfsSize appends a size=<diskMB>m option to the tmpfs mount at dst (the writable layer),
+// capping how much the payload can write there. No-op if the mount is absent.
+func applyTmpfsSize(spec map[string]any, dst string, diskMB int) {
+	mounts, _ := spec["mounts"].([]map[string]any)
+	for _, m := range mounts {
+		if d, _ := m["destination"].(string); d != dst {
+			continue
+		}
+		opts, _ := m["options"].([]string)
+		m["options"] = append(opts, fmt.Sprintf("size=%dm", diskMB))
+		return
+	}
 }
 
 // gvisorOCISpec builds the OCI runtime spec (config.json contents) for a payload run. It is a

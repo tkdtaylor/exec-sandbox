@@ -55,10 +55,10 @@ Behaviors are numbered `B-001`, … sequentially. Numbers are stable references 
 ### B-005: Report sandbox status in the result
 
 - **Trigger:** a run completes (any exit code).
-- **Response:** the result's `sandbox_status` carries `{sandbox_id, tier, duration_ms, secrets_injected, status}`. `status` is the literal `"clean"` in v0. `tier` echoes `req.run.tier`. `secrets_injected` lists `{handle_prefix, delivery}` per successfully injected handle (handles are truncated to an 8-char prefix — never the full handle, never the credential).
+- **Response:** the result's `sandbox_status` carries `{sandbox_id, tier, duration_ms, secrets_injected, status, limits}`. `status` is `"clean"` normally, or `"timeout"` when the payload was killed by the `timeout_sec` wall-clock deadline (see B-009). `tier` echoes `req.run.tier`. `secrets_injected` lists `{handle_prefix, delivery}` per successfully injected handle (handles are truncated to an 8-char prefix — never the full handle, never the credential). `limits` is the applied-caps record `{cpu_count, memory_mb, pids, disk_mb, timeout_sec, degraded[]}` (zeros mean "no limit requested"; `degraded` lists any secondary cap the host could not enforce — see B-009).
 - **Side effects:** none beyond the returned JSON.
 - **Failure modes:** none specific; this is assembled unconditionally.
-- **References:** `run.go` `Run` return; [data-model.md](data-model.md).
+- **References:** `run.go` `Run` return / `limitsReport`; [data-model.md](data-model.md).
 
 ### B-008: Select the isolation backend by tier
 
@@ -67,6 +67,19 @@ Behaviors are numbered `B-001`, … sequentially. Numbers are stable references 
 - **Side effects:** for the gVisor tier, an OCI bundle temp dir is created and removed (backend cleanup func). The chosen backend's runtime binary (`bwrap` or `runsc`) is exec'd.
 - **Failure modes:** any tier other than `""`/`bubblewrap`/`gvisor` (e.g. `firecracker`) returns `{error: "tier not implemented: <tier>"}` — there is **no silent fall-back** to bubblewrap, and no payload runs. A bundle-write error returns `{error: <err>}`.
 - **References:** ADR-001 D7, ADR-002; `run.go` `backendFor` / `Backend` / `bubblewrapBackend`; `gvisor.go` `gvisorBackend` / `gvisorOCISpec`; tests `TestBackendForRoutesByTier`, `TestBackendForUnknownTierErrors`, `TestGvisorSpecHasNoSharedNetwork`, `TestGvisorSpecMountsOnlyProxySocketForEgress`, `TestGvisorRunReachesAllowlistedHostAndBlocksOthers`.
+
+### B-009: Enforce profile.limits (cpu / memory / pids / disk / wall-clock)
+
+- **Trigger:** a run carries a `run.profile.limits` object with one or more of `cpu_count`, `memory_mb`, `pids`, `disk_mb`, `timeout_sec` (parsed by `parseLimits`; a missing/zero/non-positive field means "no limit").
+- **Response:** each cap is enforced on the selected backend (ADR 003):
+  - `timeout_sec` — backend-agnostic, in `Run()`: the child runs in its own process group (`Setpgid`) under a `context.WithTimeout`; on the deadline the whole group is `SIGKILL`ed, `sandbox_status.status` becomes `"timeout"`, and `exit_code` is `137`.
+  - `memory_mb` → `RLIMIT_AS`: under bubblewrap via an in-sandbox `prlimit --as`; under gVisor via OCI `process.rlimits` (sentry-enforced). A payload that exceeds it is killed by the allocator.
+  - `pids` → `RLIMIT_NPROC`: under bubblewrap via in-sandbox `prlimit --nproc` (per-sandbox because the bwrap user namespace gives a fresh process count); under gVisor via OCI `process.rlimits`. A fork bomb hits the cap ("Cannot fork").
+  - `disk_mb` → writable-layer (`/tmp` tmpfs) size cap: bubblewrap `--size <bytes> --tmpfs /tmp`; gVisor `/tmp` tmpfs `size=` mount option. A write past the cap returns ENOSPC.
+  - `cpu_count` → `taskset -c 0-(N-1)` affinity prefix on the spawn argv (inherited into the sandbox). Visible in-box under bubblewrap (`nproc`); under gVisor the in-box cpu view is virtualized, so cpu_count is verified host-side by the argv record (ADR 003 / agent-builder ADR 028).
+- **Side effects:** the spawn argv and/or OCI `config.json` carry the caps; `sandbox_status.limits` records the applied values; the `exit` audit context carries `status`.
+- **Failure modes:** `cpu_count` and `disk_mb` are **secondary** anti-DoS controls — when the host lacks the affordance (`taskset` absent; the writable layer reports it can't be size-capped via the `diskQuotaSupported` check), exec-sandbox **omits that one cap, prints a `WARNING` to stderr naming the control, records it in `sandbox_status.limits.degraded`, and continues** (the run is not failed — agent-builder ADR 027). `memory_mb`/`pids` are load-bearing: an inability to apply them (e.g. `prlimit` absent) is returned as `{error: …}`, not silently dropped.
+- **References:** ADR 003; agent-builder ADR 027 (degrade) / ADR 028 (runtime-aware verification); `limits.go`; `run.go` `Run` (timeout/kill) / `bubblewrapBackend` / `bwrapArgv`; `gvisor.go` `gvisorBackend` / `applyLimitsToOCISpec`; tests `TestParseLimits`, `TestTimeoutTerminatesPayload`, `TestMemoryLimitKillsPayload_Bwrap`, `TestPidsLimitRejectsForkBomb_Bwrap`, `TestDiskLimitBlocksWrites_Bwrap`, `TestCPUAffinity_Bwrap`, `TestDiskQuotaDegradesGracefully_Bwrap`, `TestGvisorEnforcesLimits`, `TestGvisorOCISpecCarriesLimits`.
 
 ---
 
@@ -95,4 +108,5 @@ Behaviors are numbered `B-001`, … sequentially. Numbers are stable references 
 - **The sandbox never has network access** regardless of profile, tier, or secret_refs. The only egress is the bind-mounted proxy socket.
 - **A proxy-mode credential value is never observable from inside the sandbox** — not in env, args, payload, or stdout. It exists only on the host-side proxy.
 - **Audit and vault calls are best-effort and non-fatal** except proxy-start failure (B-007), which aborts the run before any payload executes.
+- **Every requested `profile.limits` cap is enforced or its degradation is recorded** (B-009): a cap is applied on the active backend, or — for the secondary `cpu_count`/`disk_mb` controls only — it appears in `sandbox_status.limits.degraded` with a stderr `WARNING`. No requested cap is ever silently ignored.
 - **Every successful run returns the full result shape** (B-005); there is no partial-result path on the success side.

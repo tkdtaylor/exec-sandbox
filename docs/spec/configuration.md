@@ -39,9 +39,19 @@ Execution-shaping fields under `run`:
 |-----|------|---------|--------|
 | `run.tier` | string | `""`/`bubblewrap` → Tier-1 (bwrap) | `bubblewrap \| gvisor \| firecracker`. `""`/`bubblewrap` runs bwrap, `gvisor` runs runsc; `firecracker` (or any other value) returns `{error: "tier not implemented: <tier>"}`. The value is echoed into `sandbox_status.tier` and the spawn audit context. |
 | `run.profile.capabilities[NetConnect].allowlist` | `[string]` ("host:port") | `[]` | The egress allowlist (ports stripped). Hosts not listed are `403`-blocked by the proxy. |
-| `run.profile.capabilities` (other types) | array | — | Part of the v1 contract; not consumed by v0. (TODO: `FileRead{paths}` etc. not yet enforced.) |
-| `run.profile.limits` | object | — | cpu/mem/disk/timeout — documented in the contract; **not yet enforced in v0** (TODO). |
+| `run.profile.capabilities` (other types) | array | — | Part of the v1 contract; `FileRead{paths}` etc. not yet enforced. |
+| `run.profile.limits` | object | — | **Enforced** resource caps (ADR 003). See the per-field table below. |
 | `run.secret_refs` | `[string]` | `[]` | Opaque vault handles to inject at spawn. |
+
+`run.profile.limits` fields (each optional; missing/zero/non-positive ⇒ that cap is not applied):
+
+| Key | Type | Enforced by | Effect |
+|-----|------|-------------|--------|
+| `cpu_count` | int (cores) | `taskset -c 0-(N-1)` affinity on the spawn argv | Pins the sandbox to N cores. **Secondary control:** degrades (warn + continue) when `taskset` is absent. Under gVisor, verified host-side via the argv record (ADR 028). |
+| `memory_mb` | int (MiB) | `RLIMIT_AS` — bwrap: in-sandbox `prlimit --as`; gVisor: OCI `process.rlimits` | A payload exceeding the address-space ceiling is killed by the allocator. |
+| `pids` | int | `RLIMIT_NPROC` — bwrap: in-sandbox `prlimit --nproc` (per-sandbox via the userns); gVisor: OCI `process.rlimits` | A fork bomb hits the cap ("Cannot fork"). |
+| `disk_mb` | int (MiB) | `/tmp` tmpfs size — bwrap: `--size`; gVisor: tmpfs `size=` option | Writes past the cap return ENOSPC. **Secondary control:** degrades (warn + continue) when the writable layer can't be size-capped (`diskQuotaSupported`). |
+| `timeout_sec` | int (s) | host-side `context.WithTimeout` + process-group `SIGKILL` (backend-agnostic) | The payload (and its whole process group) is killed at the deadline; `sandbox_status.status` becomes `"timeout"`, `exit_code` `137`. |
 
 ---
 
@@ -95,3 +105,10 @@ Defaults are **safe and closed**: an empty `vault_socket`/`audit_socket` disable
 integration rather than failing; an empty allowlist blocks all egress (default-deny); the
 sandbox always runs with no network regardless of any field. Nothing in the request can widen
 the sandbox's network access beyond the proxy + allowlist.
+
+`profile.limits` defaults to "no limit" per field — an unset cap is simply not applied (limits
+*narrow* the sandbox; they never widen it). The `cpu_count` and `disk_mb` caps are **secondary**
+anti-DoS controls and degrade gracefully (a stderr `WARNING` + a `sandbox_status.limits.degraded`
+entry, never a hard failure) on hosts that can't enforce them — a documented, ADR-003-justified
+exception (mirroring agent-builder ADR 027), not a weakening of the load-bearing controls
+(no-network, proxy-only egress, memory/pids rlimits, wall-clock kill).

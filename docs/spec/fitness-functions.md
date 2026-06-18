@@ -40,6 +40,7 @@ make fitness-<rule>   # (proposed) run one rule by name
 | F-002 | Proxy-mode credential never appears in sandbox env/args/stdout | security | A loaded credential value is never placed into the bwrap argv, the sandbox env, the payload, or the returned `stdout` | 0 leaks | `make fitness-cred-not-in-sandbox` *(not yet wired)* | block | proposed | By construction: credentials live only in `EgressProxy.creds` (`proxy.go`) and are injected at the proxy edge; no automated leak check exists yet |
 | F-003 | Stdlib-only (no third-party Go dependencies) | structural | `go.mod` declares no `require` block / external modules | 0 deps | `make fitness-no-deps` *(not yet wired)* | warn | proposed | `go.mod` currently has only the module + `go` directive; any new dep must pass dep-scan |
 | F-004 | `secrets_injected` exposes only an 8-char handle prefix | security | The result never carries a full secret handle or credential | prefix ≤ 8 chars | `make fitness-handle-prefix` *(not yet wired)* | block | proposed | `run.go` `prefix(handle, 8)`; no test asserts the bound |
+| F-005 | Every `profile.limits` cap is enforced on every wired tier | security | A requested cap is applied on the active backend (memory/pids via rlimits, disk via tmpfs size, cpu via taskset affinity, timeout via host-side kill) or — for the secondary `cpu_count`/`disk_mb` controls only — recorded in `sandbox_status.limits.degraded` with a stderr WARNING. No requested cap is silently ignored: a payload exceeding memory/pids/disk is killed, and an over-running payload is terminated with `status: "timeout"` | 0 unenforced caps | `go test -run 'Limit\|Timeout\|CPUAffinity\|DiskQuota' ./...` (9 tests) | block | **active** | `limits.go` + `run.go` (`Run` timeout/kill, `bubblewrapBackend`) + `gvisor.go` (`applyLimitsToOCISpec`); asserted by `TestParseLimits`, `TestTimeoutTerminatesPayload`, `TestMemoryLimitKillsPayload_Bwrap`, `TestPidsLimitRejectsForkBomb_Bwrap`, `TestDiskLimitBlocksWrites_Bwrap`, `TestCPUAffinity_Bwrap`, `TestDiskQuotaDegradesGracefully_Bwrap`, `TestGvisorEnforcesLimits`, `TestGvisorOCISpecCarriesLimits` |
 
 Categories: `structural`, `hygiene`, `performance`, `complexity`, `security`, `coverage`.
 
@@ -57,6 +58,7 @@ Severity: `block` (fails the runner) / `warn` (surfaces but does not fail).
 - F-002 ← [SPEC.md](SPEC.md) invariant "credential value never enters the sandbox"; ADR-001 D5; [behaviors.md](behaviors.md) B-003.
 - F-003 ← ADR-001 D1 (stdlib-only).
 - F-004 ← [data-model.md](data-model.md) data invariants.
+- F-005 ← ADR 003 (profile.limits enforcement); [behaviors.md](behaviors.md) B-009; [configuration.md](configuration.md) `run.profile.limits`; adapts agent-builder ADR 027 (degrade) / ADR 028 (runtime-aware verification).
 
 ## Notes
 

@@ -66,9 +66,25 @@ survives the process.
 
 `profile.capabilities` is an array of capability objects. exec-sandbox reads only the
 `NetConnect` entries: `{ "type": "NetConnect", "allowlist": [ "host:port", … ] }` — the port is
-stripped to derive the egress allowlist. Other capability types (e.g. `FileRead{paths}`) and
-`profile.limits` are part of the v1 contract but not consumed by v0 (TODO: `limits` —
-cpu/mem/disk/timeout — are documented in the contract but not yet enforced in code).
+stripped to derive the egress allowlist. Other capability types (e.g. `FileRead{paths}`) are part
+of the v1 contract but not consumed yet.
+
+`profile.limits` **is enforced** (parsed by `parseLimits` into the `Limits` struct):
+
+```
+"limits": {
+  "cpu_count":   int,   // cores; enforced as taskset CPU affinity
+  "memory_mb":   int,   // RLIMIT_AS ceiling (MiB)
+  "pids":        int,   // RLIMIT_NPROC
+  "disk_mb":     int,   // writable-layer (/tmp tmpfs) size cap (MiB)
+  "timeout_sec": int    // wall-clock; host-side process-group kill
+}
+```
+
+Every field is optional; a missing, zero, or non-positive value means "no limit" for that cap. The
+per-backend enforcement mechanism (bubblewrap rlimits/tmpfs/affinity vs gVisor OCI
+`process.rlimits`/tmpfs `size=`) is ADR 003. `cpu_count` and `disk_mb` are secondary controls that
+degrade gracefully (recorded in `sandbox_status.limits.degraded`) on hosts that can't enforce them.
 
 - **Versioning:** v1 contract (`the ecosystem's v1 interface contract §2`). The `run` object is the
   contract proper; `wiring` is deploy/test plumbing.
@@ -102,13 +118,17 @@ cpu/mem/disk/timeout — are documented in the contract but not yet enforced in 
 {
   "stdout":    string,
   "stderr":    string,
-  "exit_code": int,                  // 0 = success; 127 = bwrap failed to start; else payload exit
+  "exit_code": int,                  // 0 = success; 137 = killed by timeout_sec; 127 = runtime failed to start; else payload exit
   "sandbox_status": {
     "sandbox_id":       string,      // "sbx-" + 6 random hex bytes
     "tier":             string,      // echoes run.tier
     "duration_ms":      int,
     "secrets_injected": [ { "handle_prefix": string, "delivery": "proxy" | "env" } ],
-    "status":           string       // "clean" in v0
+    "status":           string,      // "clean" | "timeout" (timeout = killed by the wall-clock deadline)
+    "limits": {                      // applied profile.limits (zeros = not requested)
+      "cpu_count":   int, "memory_mb": int, "pids": int, "disk_mb": int, "timeout_sec": int,
+      "degraded":    [ string ]      // secondary caps the host could not enforce (e.g. "disk_mb")
+    }
   }
 }
 ```
@@ -130,7 +150,7 @@ On an early failure (proxy could not start) the result is instead `{ "error": st
 - **Schema:** `{ "op": "emit", "event": { "actor": "exec-sandbox", "action": "spawn"|"inject_failed"|"exit", "target": sandbox_id, "decision": "allow"|"deny", "context": { … } } }`
   - `spawn` context: `{tier, request_id}`
   - `inject_failed` context: `{request_id}`
-  - `exit` context: `{exit_code, duration_ms, request_id}`
+  - `exit` context: `{exit_code, duration_ms, status, request_id}` (`status` is `"clean"` or `"timeout"`)
 
 ### `sandbox_identity`
 

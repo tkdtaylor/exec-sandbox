@@ -3,14 +3,18 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
+	"syscall"
 	"time"
 )
 
@@ -37,6 +41,7 @@ type RunRequest struct {
 // credential injection in via vault.inject (pull-triggered push).
 func Run(req RunRequest) map[string]any {
 	allowlist := netAllowlist(req.Run.Profile)
+	lim := parseLimits(req.Run.Profile)
 	sandboxID := "sbx-" + randHex(6)
 	sandboxIdentity := map[string]any{"sandbox_id": sandboxID, "attestation": randHex(16)}
 	emit(req.Wiring.AuditSocket, map[string]any{
@@ -93,20 +98,45 @@ func Run(req RunRequest) map[string]any {
 	if err != nil {
 		return map[string]any{"error": err.Error()}
 	}
-	argv, cleanup, err := backend.Argv(scriptPath, proxySock)
+	argv, cleanup, degrades, err := backend.Argv(scriptPath, proxySock, lim)
 	if cleanup != nil {
 		defer cleanup()
 	}
 	if err != nil {
 		return map[string]any{"error": err.Error()}
 	}
+	// Secondary caps (cpu_count/disk_mb) that the host can't enforce degrade loudly: a stderr
+	// WARNING names the control and it is recorded in sandbox_status.limits.degraded (ADR 003).
+	degraded := []string{}
+	for _, d := range degrades {
+		fmt.Fprintf(os.Stderr, "exec-sandbox: WARNING: %s\n", d.reason)
+		degraded = append(degraded, d.cap)
+	}
+
+	// timeout_sec is enforced host-side: the child runs in its own process group (Setpgid) and the
+	// whole group is SIGKILLed when the wall-clock deadline fires, so no descendant outlives it.
+	ctx := context.Background()
+	cancel := context.CancelFunc(func() {})
+	if lim.Timeout > 0 {
+		ctx, cancel = context.WithTimeout(ctx, lim.Timeout)
+	}
+	defer cancel()
 
 	start := time.Now()
 	var stdout, stderr bytes.Buffer
-	cmd := exec.Command(argv[0], argv[1:]...)
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if cmd.Process != nil {
+			return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		}
+		return nil
+	}
+	cmd.WaitDelay = 5 * time.Second
 	exitCode := 0
+	status := "clean"
 	if err := cmd.Run(); err != nil {
 		if ee, ok := err.(*exec.ExitError); ok {
 			exitCode = ee.ExitCode()
@@ -116,19 +146,39 @@ func Run(req RunRequest) map[string]any {
 		}
 	}
 	durationMs := time.Since(start).Milliseconds()
+	if lim.Timeout > 0 && ctx.Err() == context.DeadlineExceeded {
+		// The payload was killed by the wall-clock deadline, not by its own exit.
+		status = "timeout"
+		exitCode = 137 // 128 + SIGKILL, the conventional signal-kill exit code
+	}
 
 	emit(req.Wiring.AuditSocket, map[string]any{
 		"actor": "exec-sandbox", "action": "exit", "target": sandboxID, "decision": "allow",
 		"context": map[string]any{"exit_code": exitCode, "duration_ms": durationMs,
-			"request_id": req.Wiring.RequestID},
+			"status": status, "request_id": req.Wiring.RequestID},
 	})
 
 	return map[string]any{
 		"stdout": stdout.String(), "stderr": stderr.String(), "exit_code": exitCode,
 		"sandbox_status": map[string]any{
 			"sandbox_id": sandboxID, "tier": req.Run.Tier, "duration_ms": durationMs,
-			"secrets_injected": secretsInjected, "status": "clean",
+			"secrets_injected": secretsInjected, "status": status,
+			"limits": limitsReport(lim, degraded),
 		},
+	}
+}
+
+// limitsReport is the additive sandbox_status.limits record: the caps that were requested plus the
+// list of any that degraded (could not be enforced on this host). It lets a consumer and the audit
+// trail see exactly which caps were applied (ADR 003). Zero values mean "no limit requested".
+func limitsReport(lim Limits, degraded []string) map[string]any {
+	return map[string]any{
+		"cpu_count":   lim.CPUCount,
+		"memory_mb":   lim.MemoryMB,
+		"pids":        lim.PidsLimit,
+		"disk_mb":     lim.DiskMB,
+		"timeout_sec": int(lim.Timeout / time.Second),
+		"degraded":    degraded,
 	}
 }
 
@@ -137,8 +187,13 @@ func Run(req RunRequest) map[string]any {
 // cleanup func (run after the process exits — nil if nothing to clean up), and an error if the
 // backend could not prepare its run. Every backend must enforce the no-network +
 // proxy-only-egress invariant.
+// Argv builds the spawn argv and applies profile.limits for this backend (ADR 003): memory_mb and
+// pids as in-sandbox rlimits, disk_mb as a writable-layer (tmpfs) size cap, cpu_count as a taskset
+// affinity prefix on the argv. timeout_sec is enforced backend-agnostically in Run(), not here. Any
+// secondary cap that the host can't enforce is returned in degrades (warn + continue), never a
+// hard error; an inability to enforce a load-bearing cap is returned as err.
 type Backend interface {
-	Argv(scriptPath, proxySock string) (argv []string, cleanup func(), err error)
+	Argv(scriptPath, proxySock string, lim Limits) (argv []string, cleanup func(), degrades []degrade, err error)
 }
 
 // backendFor selects the isolation backend for a tier. "" and "bubblewrap" select Tier-1
@@ -158,27 +213,64 @@ func backendFor(tier string) (Backend, error) {
 // bubblewrapBackend is the Tier-1 isolation substrate.
 type bubblewrapBackend struct{}
 
-func (bubblewrapBackend) Argv(scriptPath, proxySock string) ([]string, func(), error) {
-	return bwrapArgv(scriptPath, proxySock), nil, nil
+func (bubblewrapBackend) Argv(scriptPath, proxySock string, lim Limits) ([]string, func(), []degrade, error) {
+	var degrades []degrade
+
+	// disk_mb → tmpfs --size on /tmp (the only writable layer). Reliably size-cappable on tmpfs;
+	// degrades (warn + continue) if a host reports the writable layer can't be sized (ADR 003).
+	diskBytes := 0
+	if lim.DiskMB > 0 {
+		if diskQuotaSupported() {
+			diskBytes = lim.DiskMB * 1024 * 1024
+		} else {
+			degrades = append(degrades, degrade{"disk_mb",
+				"disk_mb limit not enforced: writable-layer size quota unsupported on this host; running without disk quota"})
+		}
+	}
+
+	// memory_mb/pids → in-sandbox prlimit (per-sandbox via the bwrap user namespace).
+	inner, err := prlimitWrap(lim, []string{"/usr/bin/sh", "/payload.sh"})
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	argv := bwrapArgv(scriptPath, proxySock, diskBytes, inner)
+
+	// cpu_count → taskset affinity prefix on the whole argv (inherited into the sandbox).
+	if prefix, d := cpuAffinityPrefix(lim.CPUCount); d != nil {
+		degrades = append(degrades, *d)
+	} else if prefix != nil {
+		argv = append(prefix, argv...)
+	}
+	return argv, nil, degrades, nil
 }
 
-// bwrapArgv builds the Tier-1 sandbox: --unshare-all removes the network namespace
-// entirely; the bind-mounted proxy.sock is the only egress.
-func bwrapArgv(scriptPath, proxySock string) []string {
+// bwrapArgv builds the Tier-1 sandbox: --unshare-all removes the network namespace entirely; the
+// bind-mounted proxy.sock is the only egress. diskBytes > 0 size-caps the writable /tmp tmpfs;
+// finalCmd is the in-sandbox command (the payload shell, optionally wrapped by prlimit for the
+// memory/pids rlimits — see ADR 003).
+func bwrapArgv(scriptPath, proxySock string, diskBytes int, finalCmd []string) []string {
 	argv := []string{"bwrap",
 		"--ro-bind", "/usr", "/usr",
 		"--ro-bind", "/etc", "/etc",
-		"--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
+		"--proc", "/proc", "--dev", "/dev"}
+	// --size sets the size of the NEXT --tmpfs, so it must immediately precede the /tmp mount.
+	if diskBytes > 0 {
+		argv = append(argv, "--size", strconv.Itoa(diskBytes), "--tmpfs", "/tmp")
+	} else {
+		argv = append(argv, "--tmpfs", "/tmp")
+	}
+	argv = append(argv,
 		"--ro-bind", scriptPath, "/payload.sh",
 		"--bind", proxySock, "/proxy.sock",
 		"--unshare-all", "--die-with-parent", "--clearenv",
-		"--setenv", "PATH", "/usr/bin:/bin"}
+		"--setenv", "PATH", "/usr/bin:/bin")
 	for _, d := range []string{"/bin", "/lib", "/lib64", "/sbin"} {
 		if _, err := os.Stat(d); err == nil {
 			argv = append(argv, "--ro-bind", d, d)
 		}
 	}
-	return append(argv, "/usr/bin/sh", "/payload.sh")
+	return append(argv, finalCmd...)
 }
 
 func vaultInject(socket, handle string, sandboxIdentity map[string]any, mode string) (map[string]any, error) {

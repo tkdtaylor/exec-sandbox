@@ -13,7 +13,7 @@
 | Task ID | Feature | Spec file | Tests written | Status | Verified by |
 |---------|---------|-----------|---------------|--------|-------------|
 | 001 | gVisor (runsc) Tier-2 backend behind the `tier` seam | [`001-gvisor-tier2-backend-test-spec.md`](001-gvisor-tier2-backend-test-spec.md) | TC-001..007 written + passing | ✅ verified | L6 (spec-verifier APPROVE): `go test -count=1 ./...` 8/8 pass; `TestGvisorRunReachesAllowlistedHostAndBlocksOthers` ran (not skipped) under runsc — `allow=200`, `block=403`, direct net `FAILED-no-network`, `tier=gvisor`. Verifier confirmed no-network OCI netns, proxy-only egress, and `runsc --host-uds=open` connect-only confinement against authoritative flag semantics. |
-| 002 | Enforce `profile.limits` (cpu/mem/pids/disk/timeout) on bwrap + gVisor | [`002-enforce-profile-limits-test-spec.md`](002-enforce-profile-limits-test-spec.md) | TC-001..011 written | ⏳ | pending — feat commit lands 🟡; ✅ after spec-verifier APPROVE + L5/L6 enforcement evidence |
+| 002 | Enforce `profile.limits` (cpu/mem/pids/disk/timeout) on bwrap + gVisor | [`002-enforce-profile-limits-test-spec.md`](002-enforce-profile-limits-test-spec.md) | TC-001..011 written + passing | 🟡 | L1–L3: feat merged; `go test -count=1 ./...` green; all 9 limits tests ran (not skipped). ✅ pending spec-verifier APPROVE + recorded L5/L6 evidence |
 
 ## Status key
 
