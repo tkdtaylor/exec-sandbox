@@ -53,7 +53,8 @@ survives the process.
     "profile":     object,            // capabilities + limits; see below
     "tier":        string,            // "bubblewrap" | "gvisor" wired; "firecracker" → tier not implemented
     "secret_refs": [ string ],        // opaque vault handles
-    "workdir":     string             // optional host dir → bind-mounted rw at /work, cwd=/work; "" → no mount
+    "workdir":     string,            // optional host dir → bind-mounted rw at /work, cwd=/work; "" → no mount
+    "env":         { string: string } // env exported into the sandbox; "PATH" replaces the bare default; {} → unchanged
   },
   "wiring": {
     "vault_socket":   string,         // Unix socket path for vault.inject ("" → skip)
@@ -65,19 +66,30 @@ survives the process.
 }
 ```
 
-`profile.capabilities` is an array of capability objects. exec-sandbox reads only the
-`NetConnect` entries: `{ "type": "NetConnect", "allowlist": [ "host:port", … ] }` — the port is
-stripped to derive the egress allowlist. Other capability types (e.g. `FileRead{paths}`) are part
-of the v1 contract but not consumed yet.
+`profile.capabilities` is an array of capability objects. exec-sandbox reads two entry types:
+- `{ "type": "NetConnect", "allowlist": [ "host:port", … ] }` — the port is stripped to derive the
+  egress allowlist.
+- `{ "type": "FileRead", "paths": [ "/abs/host/path", … ] }` — **implemented** (ADR 005): each path
+  is bind-mounted **read-only** at the **same** path inside the sandbox. Multiple `FileRead` entries
+  **union** their path lists (`fileReadPaths`). Each path is validated before spawn — it must be
+  **absolute** and **exist**; a relative or nonexistent path is a hard `{error}` (no run, no silent
+  skip). An empty/absent `FileRead` adds no mounts.
 
 `run.workdir` (ADR 004) is the **writable working-directory** input: a host path that, when
 non-empty, is bind-mounted **read-write** at `/work` and becomes the payload's cwd (validated
 before spawn — must be an existing directory; a bad path is a hard `{error}`). It is distinct from
 `FileRead{paths}`: `run.workdir` is a single read-**write** working dir at a fixed mountpoint;
-`FileRead{paths}` is the (still-unimplemented) read-**only** list-of-paths capability. They are
-complementary, not interchangeable — a future `FileRead` implementation mounts paths read-only and
-does not collide with `run.workdir`. Empty/absent `run.workdir` ⇒ no `/work` mount (backward
-compatible).
+`FileRead{paths}` is the read-**only** list-of-same-path mounts. They compose — a run can mount a
+writable repo at `/work` *and* a read-only toolchain dir via `FileRead`. Empty/absent `run.workdir`
+⇒ no `/work` mount (backward compatible).
+
+`run.env` (ADR 005) is the env-provisioning input: a `map[string]string` exported into the sandbox.
+A `PATH` entry **replaces** the bare default `PATH=/usr/bin:/bin`; every other entry is exported as
+`k=v`. Env entries are emitted in a deterministic order (PATH first, then sorted keys) so the
+spawn argv / OCI spec are reproducible. Empty/absent `run.env` ⇒ the bare default PATH, no other
+env (backward compatible). `run.env` carries no secret — proxy-mode credentials never enter the
+sandbox (they live only at the proxy edge). Combined with `FileRead`, `run.env["PATH"]` puts a
+mounted read-only toolchain dir on PATH so a payload can `command -v <tool>` and run it.
 
 `profile.limits` **is enforced** (parsed by `parseLimits` into the `Limits` struct):
 

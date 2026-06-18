@@ -17,7 +17,7 @@ type gvisorBackend struct{}
 // `runsc run` argv that executes it, plus a cleanup func that removes the bundle. runsc must be
 // on PATH at run time; its absence surfaces as a spawn error (exit_code 127), never a silent
 // bubblewrap fall-back.
-func (gvisorBackend) Argv(scriptPath, proxySock, workdir string, lim Limits) ([]string, func(), []degrade, error) {
+func (gvisorBackend) Argv(scriptPath, proxySock, workdir string, fileReads []string, env map[string]string, lim Limits) ([]string, func(), []degrade, error) {
 	bundle, err := os.MkdirTemp("", "exec-sandbox-oci-")
 	if err != nil {
 		return nil, nil, nil, err
@@ -33,6 +33,12 @@ func (gvisorBackend) Argv(scriptPath, proxySock, workdir string, lim Limits) ([]
 	// memory_mb/pids → OCI process.rlimits (the gVisor sentry honors these directly, so they are
 	// enforced even under --ignore-cgroups); disk_mb → the /tmp tmpfs size= option (ADR 003).
 	spec := gvisorOCISpec(scriptPath, proxySock)
+	// Mount the caller-specified FileRead host paths READ-ONLY at the same path (ADR 005); no-op
+	// when empty so the base spec is byte-for-byte unchanged.
+	applyFileReadToOCISpec(spec, fileReads)
+	// Provision the payload's env (PATH replaces the bare default); no-op when env is empty,
+	// leaving process.env as the bare PATH=/usr/bin:/bin (ADR 005).
+	applyEnvToOCISpec(spec, env)
 	// Mount the host working directory writable at /work and set cwd=/work (ADR 004); no-op when
 	// workdir is empty, leaving the base spec (and its backward-compatible behavior) unchanged.
 	applyWorkdirToOCISpec(spec, workdir)
@@ -91,6 +97,38 @@ func applyWorkdirToOCISpec(spec map[string]any, workdir string) {
 	})
 	if proc, ok := spec["process"].(map[string]any); ok {
 		proc["cwd"] = "/work"
+	}
+}
+
+// applyFileReadToOCISpec appends a READ-ONLY bind mount per FileRead path, in place (ADR 005). Each
+// host path is mounted at the same path inside the sandbox with options ["ro","rbind"] — mirroring
+// the read-only system-dir mounts, NOT the writable /work bind. It is a no-op when paths is empty,
+// so the base spec is byte-for-byte unchanged. Read-only is load-bearing: a FileRead mount opens no
+// writable surface (only /work is writable) and the empty network namespace is untouched.
+func applyFileReadToOCISpec(spec map[string]any, paths []string) {
+	if len(paths) == 0 {
+		return
+	}
+	mounts, _ := spec["mounts"].([]map[string]any)
+	for _, p := range paths {
+		mounts = append(mounts, map[string]any{
+			"destination": p, "type": "bind", "source": p,
+			"options": []string{"ro", "rbind"}, // read-only (cf. the writable /work mount)
+		})
+	}
+	spec["mounts"] = mounts
+}
+
+// applyEnvToOCISpec sets process.env from the provisioned env (ADR 005), in place: PATH replaces the
+// bare default and any other entry is exported. It is a no-op when env is empty, leaving the base
+// process.env as ["PATH=/usr/bin:/bin"] — byte-for-byte the prior behavior. The order is
+// deterministic (PATH first, then sorted keys) so the generated config.json is reproducible.
+func applyEnvToOCISpec(spec map[string]any, env map[string]string) {
+	if len(env) == 0 {
+		return
+	}
+	if proc, ok := spec["process"].(map[string]any); ok {
+		proc["env"] = envList(env)
 	}
 }
 

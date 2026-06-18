@@ -168,7 +168,7 @@ func TestNoWorkdirNoMount_Bwrap(t *testing.T) {
 		t.Fatalf("cwd should not be /work without a workdir, stdout=%q", out)
 	}
 	// The constructed argv carries no /work bind and no --chdir.
-	argv, _, _, err := bubblewrapBackend{}.Argv("/p/payload.sh", "/p/proxy.sock", "", Limits{})
+	argv, _, _, err := bubblewrapBackend{}.Argv("/p/payload.sh", "/p/proxy.sock", "", nil, nil, Limits{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -305,7 +305,7 @@ func TestOnlyWorkdirWritable_Bwrap(t *testing.T) {
 
 	// (c) argv/spec inspection: bwrap binds /work writable (--bind, not --ro-bind), sets --chdir,
 	// keeps --unshare-all, adds no --share-net.
-	argv, _, _, err := bubblewrapBackend{}.Argv("/p/payload.sh", "/p/proxy.sock", dir, Limits{})
+	argv, _, _, err := bubblewrapBackend{}.Argv("/p/payload.sh", "/p/proxy.sock", dir, nil, nil, Limits{})
 	if err != nil {
 		t.Fatal(err)
 	}

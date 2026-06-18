@@ -1,7 +1,7 @@
 # Architecture Diagrams
 
 **Project:** exec-sandbox
-**Last updated:** 2026-06-18 (ADR-004: writable working-directory mount at /work)
+**Last updated:** 2026-06-18 (ADR-005: FileRead read-only host mounts + run.env PATH/env provisioning)
 
 C4-structured Mermaid diagrams covering the system at progressively detailed levels (Context → Container → Component), plus the runtime sequence flow that shows how those pieces collaborate. See [overview.md](overview.md) for prose context, [decisions/](decisions/) for the ADRs referenced here, and [`../spec/architecture.md`](../spec/architecture.md) for the structured element catalog these diagrams render.
 
@@ -46,7 +46,7 @@ C4Container
     System_Boundary(boundary, "exec-sandbox process") {
         Container(cli, "exec-sandbox run", "Go / main package", "Reads RunRequest on stdin, orchestrates the run, writes result on stdout")
         Container(proxy, "Egress proxy", "Go / net/http on a Unix socket", "Domain allowlist + credential injection; the sandbox's only path out")
-        Container(sandbox, "isolation sandbox", "bwrap --unshare-all | runsc (gVisor)", "Runs payload.sh with no network namespace; /proxy.sock bind-mounted in. Optional run.workdir bind-mounted read-write at /work (cwd=/work). Tier selected by run.tier.")
+        Container(sandbox, "isolation sandbox", "bwrap --unshare-all | runsc (gVisor)", "Runs payload.sh with no network namespace; /proxy.sock bind-mounted in. Optional run.workdir bind-mounted read-write at /work (cwd=/work); optional FileRead paths bind-mounted read-only at the same path; run.env provisions PATH/env. Tier selected by run.tier.")
     }
 
     System_Ext(vault, "vault")
@@ -123,10 +123,10 @@ sequenceDiagram
             Run->>Audit: emit inject_failed {decision:deny}
         end
     end
-    Run->>Run: validateWorkdir(run.workdir) (bad path → error, no run)
+    Run->>Run: validateWorkdir(run.workdir) + validateFileReads(FileRead paths) (bad path → error, no run)
     Run->>Proxy: Start(proxy.sock)
     Run->>Run: backendFor(tier) → bubblewrap | gvisor (unknown → error)
-    Run->>Box: exec backend (bwrap --unshare-all, or runsc over an OCI bundle; payload.sh + /proxy.sock bind-mounted, no network; run.workdir → /work rw, cwd=/work)
+    Run->>Box: exec backend (bwrap --unshare-all, or runsc over an OCI bundle; payload.sh + /proxy.sock bind-mounted, no network; run.workdir → /work rw cwd=/work; FileRead paths → ro mounts; run.env → PATH/env)
     Box->>Proxy: outbound HTTP via /proxy.sock (only egress)
     Proxy->>Proxy: allowlist check; inject credential
     Proxy-->>Box: forwarded response (or 403 blocked / 502 no-route)

@@ -131,7 +131,7 @@ func TestGvisorOCISpecCarriesLimits(t *testing.T) {
 	}
 
 	// cpu_count is verified host-side: the runsc argv must be prefixed with taskset -c 0-1.
-	argv, cleanup, _, err := gvisorBackend{}.Argv("/work/payload.sh", "/work/proxy.sock", "",
+	argv, cleanup, _, err := gvisorBackend{}.Argv("/work/payload.sh", "/work/proxy.sock", "", nil, nil,
 		Limits{CPUCount: 2})
 	if cleanup != nil {
 		defer cleanup()
@@ -151,7 +151,7 @@ func TestGvisorOCISpecCarriesLimits(t *testing.T) {
 	if _, present := base["process"].(map[string]any)["rlimits"]; present {
 		t.Fatal("zero limits added process.rlimits")
 	}
-	zargv, zc, _, _ := gvisorBackend{}.Argv("/work/payload.sh", "/work/proxy.sock", "", Limits{})
+	zargv, zc, _, _ := gvisorBackend{}.Argv("/work/payload.sh", "/work/proxy.sock", "", nil, nil, Limits{})
 	if zc != nil {
 		defer zc()
 	}

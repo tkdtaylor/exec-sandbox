@@ -78,33 +78,43 @@ contract.
 The **tier seam point**. Maps `req.run.tier` to an isolation `Backend`: `""` and `"bubblewrap"`
 → the bubblewrap backend; `"gvisor"` → the runsc backend; any other tier → a
 `tier not implemented: <tier>` error (no silent fall-back). `Run()` calls `backendFor` and then
-`backend.Argv(scriptPath, proxySock, workdir, lim)` to obtain the spawn argv. A new isolation
-backend is added by implementing `Backend` and registering it here, preserving the no-network +
-proxy-only-egress invariant and the captured stdout/stderr/exit contract.
+`backend.Argv(scriptPath, proxySock, workdir, fileReads, env, lim)` to obtain the spawn argv. A new
+isolation backend is added by implementing `Backend` and registering it here, preserving the
+no-network + proxy-only-egress invariant and the captured stdout/stderr/exit contract.
 
 ### `Backend` interface (`run.go`)
 
 ```go
 type Backend interface {
-    Argv(scriptPath, proxySock, workdir string, lim Limits) (argv []string, cleanup func(), degrades []degrade, err error)
+    Argv(scriptPath, proxySock, workdir string, fileReads []string, env map[string]string, lim Limits) (argv []string, cleanup func(), degrades []degrade, err error)
 }
 ```
 
 Given the on-host payload script, proxy socket, optional writable working directory (`workdir`;
-`""` ⇒ no `/work` mount), and the parsed resource `Limits`, a backend returns the `os/exec` argv to
-spawn, an optional `cleanup` func run after the process exits (nil if nothing to clean up), the list
-of `degrades` (secondary caps the host could not enforce — ADR 003), and an error if it could not
-prepare the run. Two implementations exist: `bubblewrapBackend` (returns the `bwrapArgv` slice; no
-cleanup) and `gvisorBackend` (writes an OCI bundle to a temp dir, returns the `runsc run` argv, and
-a cleanup that removes the bundle).
+`""` ⇒ no `/work` mount), the validated read-only `fileReads` host paths (`nil` ⇒ no extra mounts),
+the provisioned `env` (`nil`/empty ⇒ bare `PATH=/usr/bin:/bin`), and the parsed resource `Limits`, a
+backend returns the `os/exec` argv to spawn, an optional `cleanup` func run after the process exits
+(nil if nothing to clean up), the list of `degrades` (secondary caps the host could not enforce —
+ADR 003), and an error if it could not prepare the run. Two implementations exist:
+`bubblewrapBackend` (returns the `bwrapArgv` slice; no cleanup) and `gvisorBackend` (writes an OCI
+bundle to a temp dir, returns the `runsc run` argv, and a cleanup that removes the bundle).
 
-### `bwrapArgv(scriptPath, proxySock, workdir string, diskBytes int, finalCmd []string) []string` (`run.go`)
+### `bwrapArgv(scriptPath, proxySock, workdir string, fileReads []string, env map[string]string, diskBytes int, finalCmd []string) []string` (`run.go`)
 
 Builds the Tier-1 bubblewrap argv (`--unshare-all`, minimal read-only root, `/payload.sh` and
 `/proxy.sock` bind-mounted; `diskBytes > 0` size-caps the `/tmp` tmpfs; `finalCmd` is the in-sandbox
 command). When `workdir` is non-empty it appends `--bind <workdir> /work --chdir /work` — the host
-dir mounted **read-write** (not `--ro-bind`) as the payload's cwd (ADR 004). Used by
-`bubblewrapBackend`.
+dir mounted **read-write** (not `--ro-bind`) as the payload's cwd (ADR 004). For each `fileReads`
+path it appends `--ro-bind <path> <path>` — mounted **read-only** at the same path (ADR 005). The
+provisioned `env` is emitted as `--setenv` pairs (PATH defaulted to `/usr/bin:/bin` when absent),
+via `envSetenvPairs`. Used by `bubblewrapBackend`.
+
+### `fileReadPaths(profile map[string]any) []string` / `validateFileReads(paths []string) error` (`run.go`)
+
+`fileReadPaths` collects the host paths from every `FileRead` capability in `profile.capabilities`
+(mirroring `netAllowlist`'s `NetConnect` scan); multiple entries union their lists.
+`validateFileReads` checks each path is **absolute** and **exists** before any side effect — a
+relative or nonexistent path is a hard error (the run does not start; no silent skip — ADR 005).
 
 ### `gvisorOCISpec(scriptPath, proxySock string) map[string]any` (`gvisor.go`)
 
@@ -114,7 +124,8 @@ fresh empty netns — no host/bridged networking), a read-only root with the hos
 bind-mounted read-only, and the proxy socket as the only egress bind-mount at `/proxy.sock`. The
 `runsc run` invocation adds `--network=none` (belt-and-suspenders no-network), `--host-uds=open`
 (lets the payload connect to the existing proxy socket but not create host sockets), and
-`--ignore-cgroups`. `applyLimitsToOCISpec` and `applyWorkdirToOCISpec` mutate this base in place.
+`--ignore-cgroups`. `applyFileReadToOCISpec`, `applyEnvToOCISpec`, `applyWorkdirToOCISpec`, and
+`applyLimitsToOCISpec` mutate this base in place.
 
 ### `applyWorkdirToOCISpec(spec map[string]any, workdir string)` (`gvisor.go`)
 
@@ -123,6 +134,15 @@ Mutates the OCI spec in place to mount `workdir` **read-write** at `/work` (moun
 read-only rootfs/system dirs, cwd `"/"` — is unchanged and backward-compatible. The `/work` mount is
 the only writable host-path bind; the empty network namespace is untouched. Mirrors the shape of
 `applyLimitsToOCISpec`.
+
+### `applyFileReadToOCISpec(spec map[string]any, paths []string)` / `applyEnvToOCISpec(spec map[string]any, env map[string]string)` (`gvisor.go`)
+
+`applyFileReadToOCISpec` appends one **read-only** bind mount per FileRead path
+(`{destination:<p>, type:bind, source:<p>, options:[ro,rbind]}`) at the same path — mirroring the
+read-only system-dir mounts, never the writable `/work` bind (ADR 005). `applyEnvToOCISpec` sets
+`process.env` from the provisioned env (PATH replaces the bare default; deterministic order via
+`envList`). Both are no-ops when their input is empty, so the base spec is byte-for-byte unchanged.
+The empty network namespace is untouched.
 
 ### `EgressProxy` (`proxy.go`)
 

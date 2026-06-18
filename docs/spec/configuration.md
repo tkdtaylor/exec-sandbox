@@ -39,9 +39,10 @@ Execution-shaping fields under `run`:
 |-----|------|---------|--------|
 | `run.tier` | string | `""`/`bubblewrap` → Tier-1 (bwrap) | `bubblewrap \| gvisor \| firecracker`. `""`/`bubblewrap` runs bwrap, `gvisor` runs runsc; `firecracker` (or any other value) returns `{error: "tier not implemented: <tier>"}`. The value is echoed into `sandbox_status.tier` and the spawn audit context. |
 | `run.profile.capabilities[NetConnect].allowlist` | `[string]` ("host:port") | `[]` | The egress allowlist (ports stripped). Hosts not listed are `403`-blocked by the proxy. |
-| `run.profile.capabilities` (other types) | array | — | Part of the v1 contract; `FileRead{paths}` (read-**only** host paths) not yet enforced. The read-**write** host dir is `run.workdir` below, not `FileRead`. |
+| `run.profile.capabilities[FileRead].paths` | `[string]` (abs host paths) | `[]` | **Read-only host mounts** (ADR 005). Each path is bind-mounted **read-only** at the **same** path inside the sandbox; multiple `FileRead` entries union their paths. Validated before spawn (each must be absolute + exist, else a hard `{error}`). The read-**write** host dir is `run.workdir`, not `FileRead`. |
 | `run.profile.limits` | object | — | **Enforced** resource caps (ADR 003). See the per-field table below. |
 | `run.workdir` | string (host path) | `""` | **Writable working directory** (ADR 004). Non-empty → the host dir is bind-mounted **read-write** at `/work` and the payload's cwd is `/work`; validated before spawn (must be an existing directory, else a hard `{error}`). Empty → no `/work` mount (backward compatible). The one writable host surface — system dirs stay read-only, the network stays unshared. |
+| `run.env` | object `{string: string}` | `{}` | **Env provisioning** (ADR 005). Each entry is exported into the sandbox; a `PATH` entry **replaces** the bare default `PATH=/usr/bin:/bin`, every other entry is exported as `k=v`. Combined with `FileRead`, `run.env["PATH"]` puts a mounted toolchain dir on PATH. Empty → bare default PATH, no other env (backward compatible). Carries no secret. |
 | `run.secret_refs` | `[string]` | `[]` | Opaque vault handles to inject at spawn. |
 
 `run.profile.limits` fields (each optional; missing/zero/non-positive ⇒ that cap is not applied):
@@ -59,7 +60,9 @@ Execution-shaping fields under `run`:
 ## Environment variables
 
 The **application** reads no environment variables. (Inside the sandbox, the environment is
-cleared — `bwrap --clearenv` — and only `PATH=/usr/bin:/bin` is set.)
+cleared — `bwrap --clearenv` / gVisor `process.env` — and `PATH=/usr/bin:/bin` is set by default.
+A caller-supplied `run.env` overrides `PATH` and adds further variables — ADR 005; the credential
+invariant is untouched, `run.env` carries no secret.)
 
 **Hook profile env vars** (consumed by `.claude/scripts/`, not the application itself):
 - `CLAUDE_HOOK_PROFILE` — `minimal` / `standard` / `strict` (default `standard`)
@@ -111,6 +114,12 @@ the sandbox's network access beyond the proxy + allowlist.
 surface when the caller explicitly names a directory, and even then it is the single `/work`
 mount; the rootfs and system dirs stay read-only and the network stays unshared regardless. A
 malformed `run.workdir` fails the run loudly rather than silently running without the mount.
+
+`FileRead{paths}` defaults to none and `run.env` to `{}` — **no read-only host mounts, bare PATH**.
+A run gains read-only host paths only when the caller lists them, and they are mounted **read-only**
+(never writable — `/work` stays the only writable surface). FileRead opens no egress and the
+network stays unshared regardless. A malformed `FileRead` path (relative or nonexistent) fails the
+run loudly before any side effect rather than silently running without the mount.
 
 `profile.limits` defaults to "no limit" per field — an unset cap is simply not applied (limits
 *narrow* the sandbox; they never widen it). The `cpu_count` and `disk_mb` caps are **secondary**

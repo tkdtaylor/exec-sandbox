@@ -12,6 +12,7 @@ profile = { capabilities:[ {type:NetConnect, allowlist:["host:443"]},
 tier    = bubblewrap | gvisor | firecracker        # bubblewrap + gvisor wired; firecracker → "tier not implemented"
 secret_refs = [ handle ]                            # opaque; exec-sandbox calls vault.inject
 workdir = host path                                 # optional; "" → no mount (see below)
+env     = { KEY: value }                            # optional; PATH replaces the bare default; {} → unchanged (see below)
 
 result = { stdout, stderr, exit_code,
            sandbox_status:{ sandbox_id, tier, duration_ms, secrets_injected:[…],
@@ -27,8 +28,21 @@ applies it as `--bind <workdir> /work --chdir /work`; gVisor as a writable OCI `
 (`options` without `ro`) + `process.cwd = "/work"`. The path is validated before spawn — it must be
 an existing directory — and a bad path is a hard `{error}` (no silent fall-back). When empty/absent
 there is no `/work` mount and behavior is exactly as before (backward compatible). This is the
-**writable** host-path mechanism; the read-only `FileRead{paths}` capability (still unimplemented)
-is its complement, not a substitute — see `configuration.md`.
+**writable** host-path mechanism; the read-only `FileRead{paths}` capability is its complement, not
+a substitute — see below and `configuration.md`.
+
+## Read-only host mounts (`FileRead{paths}`) + env provisioning (`run.env`)
+**Implemented** (ADR 005). Each `{type:FileRead, paths:[…]}` capability bind-mounts its host paths
+**read-only** at the **same** path inside the sandbox (bwrap `--ro-bind <p> <p>`; gVisor OCI mount
+`options:[ro,rbind]`); multiple `FileRead` entries union their paths. Each path is validated before
+spawn — it must be **absolute** and **exist** — and a relative/nonexistent path is a hard `{error}`
+(no silent skip), the same ordering as `run.workdir`. `run.env` (`map[string]string`) is exported
+into the sandbox: `PATH` replaces the bare default `PATH=/usr/bin:/bin`, every other entry is
+exported `k=v`. Combined, `run.env["PATH"]` puts a FileRead-mounted toolchain dir on PATH so a
+payload can `command -v <tool>` and run it. FileRead is **read-only** (a write fails — only `/work`
+is writable), opens **no** egress, and leaves the network unshared. Empty `FileRead`/`run.env` ⇒ no
+extra mounts, bare PATH (backward compatible). `run.env` carries no secret — proxy-mode credentials
+never enter the sandbox.
 
 ## Resource limits (`profile.limits`)
 Enforced on every wired tier (ADR 003). `cpu_count` → `taskset` CPU affinity; `memory_mb` →
