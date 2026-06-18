@@ -1,6 +1,6 @@
 # Task 003: add a writable working-directory mount to `run()`
 
-**Status:** 🟡 code merged
+**Status:** ✅ verified
 **Branch:** `task/003-writable-workdir-mount`
 **Spec:** [`docs/tasks/test-specs/003-writable-workdir-mount-test-spec.md`](../test-specs/003-writable-workdir-mount-test-spec.md)
 **ADR:** [`docs/architecture/decisions/004-writable-workdir-mount.md`](../../architecture/decisions/004-writable-workdir-mount.md)
