@@ -51,15 +51,17 @@ single-binary Go CLI (`exec-sandbox run`) that reads a JSON `RunRequest` on stdi
 supplied agent-generated payload in a sandbox with **no network**. The sandbox's only path out
 is a host-side egress proxy on a Unix socket that enforces a domain allowlist and injects
 credentials obtained from `vault`. In proxy mode the credential value never enters the sandbox.
-spawn/inject/exit events are emitted to `audit-trail`. v0 implements Tier-1 isolation
-(bubblewrap) only, behind a `tier` seam designed to accept gVisor and Firecracker later without
-changing the `run()` contract.
+spawn/inject/exit events are emitted to `audit-trail`. Two isolation tiers are wired behind a
+`tier` seam — Tier-1 bubblewrap (`bwrap`) and Tier-2 gVisor (`runsc`) — both enforcing the same
+no-network + proxy-only-egress invariant; Tier-3 Firecracker is accepted by the `tier` field but
+not yet implemented. The seam keeps the `run()` contract stable across tiers.
 
 ## Top-level invariants
 
-- **No network in the sandbox.** The payload runs under `bwrap --unshare-all` — no network
-  namespace. There is no `--share-net` and no direct route out. Enforced in code by `bwrapArgv`
-  (`run.go`); proposed as fitness rule F-001.
+- **No network in the sandbox.** The payload runs with no network namespace regardless of tier —
+  bubblewrap via `bwrap --unshare-all`, gVisor via an OCI spec declaring an empty `network`
+  namespace plus `runsc --network=none`. There is no `--share-net` and no direct route out.
+  Enforced in code by `bwrapArgv` and `gvisorOCISpec`; proposed as fitness rule F-001.
 - **The bind-mounted proxy socket is the only egress.** `/proxy.sock` is the sole path out of
   the sandbox. The egress proxy enforces the domain allowlist; non-allowlisted hosts get `403`.
 - **exec-sandbox owns the network boundary; vault owns credential injection.** exec-sandbox
@@ -79,5 +81,5 @@ changing the `run()` contract.
   for agent-generated code.
 - **No persistent state** — every run is ephemeral (fresh temp dir, fresh proxy, wiped at
   teardown).
-- **Tier 2/3 not yet implemented** — `gvisor` / `firecracker` are accepted by the `tier` field
-  but only `bubblewrap` is wired in v0.
+- **Tier 3 not yet implemented** — `firecracker` is accepted by the `tier` field but returns
+  `tier not implemented`. Tier-1 (`bubblewrap`) and Tier-2 (`gvisor`) are wired.
