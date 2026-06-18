@@ -23,10 +23,10 @@ Behaviors are numbered `B-001`, … sequentially. Numbers are stable references 
 ### B-001: Run a payload in a no-network sandbox
 
 - **Trigger:** `exec-sandbox run` receives a JSON `RunRequest` on stdin with a `run.payload`.
-- **Response:** writes `req.run.payload` to a `payload.sh` (mode 0600) in a fresh temp dir, then runs it under `bwrap --unshare-all --die-with-parent --clearenv` with a minimal read-only root (`/usr`, `/etc`, conditionally `/bin /lib /lib64 /sbin`), `--proc`, `--dev`, `--tmpfs /tmp`, `PATH=/usr/bin:/bin`, the payload bind-mounted read-only as `/payload.sh`, and the egress proxy socket bind-mounted as `/proxy.sock`. Captures stdout, stderr, and exit code. Returns a JSON result `{stdout, stderr, exit_code, sandbox_status}` on stdout.
-- **Side effects:** the temp dir and its contents (payload, proxy socket) are created and removed (`defer os.RemoveAll`); spawn and exit audit events are emitted (see B-004).
-- **Failure modes:** if `bwrap` fails to start (e.g. binary absent or non-exec error), `exit_code` is set to `127` and the error string is appended to stderr. If `bwrap` exits non-zero, that exit code is propagated.
-- **References:** ADR-001 D2/D3; `run.go` `Run` / `bwrapArgv`.
+- **Response:** writes `req.run.payload` to a `payload.sh` (mode 0600) in a fresh temp dir, selects the isolation backend by `run.tier` (see B-008), then runs the payload under that backend with a minimal read-only root (`/usr`, `/etc`, conditionally `/bin /lib /lib64 /sbin`), `/proc`, `/dev`, a `/tmp` tmpfs, `PATH=/usr/bin:/bin`, the payload bind-mounted read-only as `/payload.sh`, and the egress proxy socket bind-mounted as `/proxy.sock` — with **no network namespace regardless of tier**. For the bubblewrap tier this is `bwrap --unshare-all --die-with-parent --clearenv`; for the gvisor tier it is `runsc run` over a generated OCI bundle whose spec declares an empty network namespace (see B-008). Captures stdout, stderr, and exit code. Returns a JSON result `{stdout, stderr, exit_code, sandbox_status}` on stdout.
+- **Side effects:** the temp dir and its contents (payload, proxy socket; for gvisor also the OCI bundle in its own temp dir) are created and removed (`defer os.RemoveAll` / the backend cleanup func); spawn and exit audit events are emitted (see B-004).
+- **Failure modes:** if the selected runtime (`bwrap` or `runsc`) fails to start (e.g. binary absent or non-exec error), `exit_code` is set to `127` and the error string is appended to stderr. If the runtime exits non-zero, that exit code is propagated. An unrecognized tier returns `{error: "tier not implemented: <tier>"}` without running anything (see B-008).
+- **References:** ADR-001 D2/D3, ADR-002; `run.go` `Run` / `backendFor` / `bwrapArgv`; `gvisor.go`.
 
 ### B-002: Enforce the egress allowlist and route through the proxy
 
@@ -59,6 +59,14 @@ Behaviors are numbered `B-001`, … sequentially. Numbers are stable references 
 - **Side effects:** none beyond the returned JSON.
 - **Failure modes:** none specific; this is assembled unconditionally.
 - **References:** `run.go` `Run` return; [data-model.md](data-model.md).
+
+### B-008: Select the isolation backend by tier
+
+- **Trigger:** a run reaches the spawn step with `req.run.tier`.
+- **Response:** `backendFor(tier)` selects the isolation backend. `""` and `"bubblewrap"` select the Tier-1 bubblewrap backend (`bwrapArgv`, unchanged); `"gvisor"` selects the Tier-2 gVisor backend. The gVisor backend writes an OCI bundle (`config.json` + a rootfs dir) to its own temp dir: the spec declares a `network` namespace with **no path** (a fresh empty netns — loopback only, no host/bridged networking, the OCI equivalent of `--unshare-all`), a read-only root with the host system dirs bind-mounted read-only, the payload read-only at `/payload.sh`, and the proxy socket as the only egress bind-mount at `/proxy.sock`. It then runs `runsc --network=none --host-uds=open --ignore-cgroups run --bundle <dir> <id>` (and `--rootless` when exec-sandbox runs unprivileged). `--host-uds=open` lets the payload connect to the existing proxy socket but never create host sockets. The bundle is removed after the process exits.
+- **Side effects:** for the gVisor tier, an OCI bundle temp dir is created and removed (backend cleanup func). The chosen backend's runtime binary (`bwrap` or `runsc`) is exec'd.
+- **Failure modes:** any tier other than `""`/`bubblewrap`/`gvisor` (e.g. `firecracker`) returns `{error: "tier not implemented: <tier>"}` — there is **no silent fall-back** to bubblewrap, and no payload runs. A bundle-write error returns `{error: <err>}`.
+- **References:** ADR-001 D7, ADR-002; `run.go` `backendFor` / `Backend` / `bubblewrapBackend`; `gvisor.go` `gvisorBackend` / `gvisorOCISpec`; tests `TestBackendForRoutesByTier`, `TestBackendForUnknownTierErrors`, `TestGvisorSpecHasNoSharedNetwork`, `TestGvisorSpecMountsOnlyProxySocketForEgress`, `TestGvisorRunReachesAllowlistedHostAndBlocksOthers`.
 
 ---
 

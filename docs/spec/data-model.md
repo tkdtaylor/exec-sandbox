@@ -51,7 +51,7 @@ survives the process.
   "run": {
     "payload":     string,            // shell script run as payload.sh
     "profile":     object,            // capabilities + limits; see below
-    "tier":        string,            // "bubblewrap" | "gvisor" | "firecracker" (v0 wires bubblewrap)
+    "tier":        string,            // "bubblewrap" | "gvisor" wired; "firecracker" → tier not implemented
     "secret_refs": [ string ]         // opaque vault handles
   },
   "wiring": {

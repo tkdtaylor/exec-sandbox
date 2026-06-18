@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net"
 	"os"
 	"os/exec"
@@ -84,9 +85,25 @@ func Run(req RunRequest) map[string]any {
 	scriptPath := filepath.Join(work, "payload.sh")
 	os.WriteFile(scriptPath, []byte(req.Run.Payload), 0o600)
 
+	// Tier seam: select the isolation backend by req.run.tier. "" and "bubblewrap" both select
+	// Tier-1 (bwrap, unchanged); "gvisor" selects the runsc Tier-2 backend; any other tier is a
+	// hard error (no silent fall-back). Every backend enforces the same no-network +
+	// proxy-only-egress invariant.
+	backend, err := backendFor(req.Run.Tier)
+	if err != nil {
+		return map[string]any{"error": err.Error()}
+	}
+	argv, cleanup, err := backend.Argv(scriptPath, proxySock)
+	if cleanup != nil {
+		defer cleanup()
+	}
+	if err != nil {
+		return map[string]any{"error": err.Error()}
+	}
+
 	start := time.Now()
 	var stdout, stderr bytes.Buffer
-	cmd := exec.Command(bwrapArgv(scriptPath, proxySock)[0], bwrapArgv(scriptPath, proxySock)[1:]...)
+	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	exitCode := 0
@@ -113,6 +130,36 @@ func Run(req RunRequest) map[string]any {
 			"secrets_injected": secretsInjected, "status": "clean",
 		},
 	}
+}
+
+// Backend is an isolation substrate selected by the tier seam. Given the on-host payload script
+// and proxy socket, it returns the os/exec argv to spawn (argv[0] is the program), an optional
+// cleanup func (run after the process exits — nil if nothing to clean up), and an error if the
+// backend could not prepare its run. Every backend must enforce the no-network +
+// proxy-only-egress invariant.
+type Backend interface {
+	Argv(scriptPath, proxySock string) (argv []string, cleanup func(), err error)
+}
+
+// backendFor selects the isolation backend for a tier. "" and "bubblewrap" select Tier-1
+// (bwrap); "gvisor" selects the runsc Tier-2 backend. Any other tier is a hard error — there is
+// no silent fall-back to bubblewrap.
+func backendFor(tier string) (Backend, error) {
+	switch tier {
+	case "", "bubblewrap":
+		return bubblewrapBackend{}, nil
+	case "gvisor":
+		return gvisorBackend{}, nil
+	default:
+		return nil, errors.New("tier not implemented: " + tier)
+	}
+}
+
+// bubblewrapBackend is the Tier-1 isolation substrate.
+type bubblewrapBackend struct{}
+
+func (bubblewrapBackend) Argv(scriptPath, proxySock string) ([]string, func(), error) {
+	return bwrapArgv(scriptPath, proxySock), nil, nil
 }
 
 // bwrapArgv builds the Tier-1 sandbox: --unshare-all removes the network namespace

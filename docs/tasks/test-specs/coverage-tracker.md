@@ -12,7 +12,7 @@
 
 | Task ID | Feature | Spec file | Tests written | Status | Verified by |
 |---------|---------|-----------|---------------|--------|-------------|
-| 001 | gVisor (runsc) Tier-2 backend behind the `tier` seam | [`001-gvisor-tier2-backend-test-spec.md`](001-gvisor-tier2-backend-test-spec.md) | spec written | 🔲 pending implementation | — |
+| 001 | gVisor (runsc) Tier-2 backend behind the `tier` seam | [`001-gvisor-tier2-backend-test-spec.md`](001-gvisor-tier2-backend-test-spec.md) | TC-001..007 written + passing | 🟡 code merged | L6 (executor-observed): `go test` ran `TestGvisorRunReachesAllowlistedHostAndBlocksOthers` (PASS, not skipped); binary run shows `allow=200`, `block=403`, direct net `FAILED-no-network`, `tier=gvisor` — awaiting spec-verifier APPROVE for ✅ |
 
 ## Status key
 

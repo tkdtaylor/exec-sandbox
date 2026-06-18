@@ -37,7 +37,7 @@ Execution-shaping fields under `run`:
 
 | Key | Type | Default | Effect |
 |-----|------|---------|--------|
-| `run.tier` | string | (echoed; v0 always runs bubblewrap) | `bubblewrap \| gvisor \| firecracker`. v0 wires bubblewrap only; the value is echoed into `sandbox_status.tier` and the spawn audit context. |
+| `run.tier` | string | `""`/`bubblewrap` → Tier-1 (bwrap) | `bubblewrap \| gvisor \| firecracker`. `""`/`bubblewrap` runs bwrap, `gvisor` runs runsc; `firecracker` (or any other value) returns `{error: "tier not implemented: <tier>"}`. The value is echoed into `sandbox_status.tier` and the spawn audit context. |
 | `run.profile.capabilities[NetConnect].allowlist` | `[string]` ("host:port") | `[]` | The egress allowlist (ports stripped). Hosts not listed are `403`-blocked by the proxy. |
 | `run.profile.capabilities` (other types) | array | — | Part of the v1 contract; not consumed by v0. (TODO: `FileRead{paths}` etc. not yet enforced.) |
 | `run.profile.limits` | object | — | cpu/mem/disk/timeout — documented in the contract; **not yet enforced in v0** (TODO). |

@@ -57,7 +57,8 @@ This is not a public API — it is the sandbox's only egress path. The payload r
 | vault | `vault.inject(handle, sandbox_identity, mode)` | Unix-socket JSON-line (`ipcCall`, 10s dial timeout) | On error/`error` field → `inject_failed` audit event, handle skipped, run continues. Empty `vault_socket` → call skipped. |
 | audit-trail | `emit(event)` (`op: "emit"`) | Unix-socket JSON-line (`ipcCall`, 10s dial timeout) | Best-effort: empty `audit_socket` → no-op; transport error swallowed. |
 | Allowlisted origin | Forwarded HTTP request | `net/http` client over TCP | `502` returned to the sandbox on dial/transport error. |
-| bubblewrap (`bwrap`) | Subprocess exec of the sandbox argv | `os/exec`, `bwrap` resolved on `PATH` | If `bwrap` is absent or fails to start, `result.exit_code = 127` and stderr carries the error. |
+| bubblewrap (`bwrap`) | Subprocess exec of the Tier-1 sandbox argv (`tier` empty/`bubblewrap`) | `os/exec`, `bwrap` resolved on `PATH` | If `bwrap` is absent or fails to start, `result.exit_code = 127` and stderr carries the error. |
+| gVisor (`runsc`) | Subprocess exec of `runsc run` over a generated OCI bundle (`tier == gvisor`) | `os/exec`, `runsc` resolved on `PATH` | If `runsc` is absent or fails to start, `result.exit_code = 127` and stderr carries the error. No fall-back to bubblewrap. |
 
 ---
 
@@ -72,12 +73,42 @@ The orchestration entry point. Stable contract: given a `RunRequest`, returns th
 (`{stdout, stderr, exit_code, sandbox_status}` or `{error}`). This realizes the v1 `run()`
 contract.
 
+### `backendFor(tier string) (Backend, error)` (`run.go`)
+
+The **tier seam point**. Maps `req.run.tier` to an isolation `Backend`: `""` and `"bubblewrap"`
+→ the bubblewrap backend; `"gvisor"` → the runsc backend; any other tier → a
+`tier not implemented: <tier>` error (no silent fall-back). `Run()` calls `backendFor` and then
+`backend.Argv(scriptPath, proxySock)` to obtain the spawn argv. A new isolation backend is added by
+implementing `Backend` and registering it here, preserving the no-network + proxy-only-egress
+invariant and the captured stdout/stderr/exit contract.
+
+### `Backend` interface (`run.go`)
+
+```go
+type Backend interface {
+    Argv(scriptPath, proxySock string) (argv []string, cleanup func(), err error)
+}
+```
+
+Given the on-host payload script and proxy socket, a backend returns the `os/exec` argv to spawn,
+an optional `cleanup` func run after the process exits (nil if nothing to clean up), and an error
+if it could not prepare the run. Two implementations exist: `bubblewrapBackend` (returns the
+`bwrapArgv` slice; no cleanup) and `gvisorBackend` (writes an OCI bundle to a temp dir, returns the
+`runsc run` argv, and a cleanup that removes the bundle).
+
 ### `bwrapArgv(scriptPath, proxySock string) []string` (`run.go`)
 
-Builds the Tier-1 bubblewrap argv. This is the **tier seam point**: a new isolation backend
-(gVisor/Firecracker) is added by dispatching on `req.run.tier` to an alternative argv/runtime
-builder, preserving the no-network + proxy-only-egress invariant and the captured
-stdout/stderr/exit contract. v0 dispatches unconditionally to `bwrapArgv`.
+Builds the Tier-1 bubblewrap argv (`--unshare-all`, minimal read-only root, `/payload.sh` and
+`/proxy.sock` bind-mounted). Used by `bubblewrapBackend`.
+
+### `gvisorOCISpec(scriptPath, proxySock string) map[string]any` (`gvisor.go`)
+
+Builds the OCI runtime spec (`config.json` contents) for the gVisor backend. A pure function of the
+on-host paths (unit-testable without runsc). Declares a `network` namespace with no path (a fresh
+empty netns — no host/bridged networking), a read-only root with the host system dirs bind-mounted
+read-only, and the proxy socket as the only egress bind-mount at `/proxy.sock`. The `runsc run`
+invocation adds `--network=none` (belt-and-suspenders no-network), `--host-uds=open` (lets the
+payload connect to the existing proxy socket but not create host sockets), and `--ignore-cgroups`.
 
 ### `EgressProxy` (`proxy.go`)
 
@@ -102,7 +133,8 @@ returns an empty map (no-op).
 
 ## Extension points
 
-- **Isolation backends** plug in behind the `tier` seam (`bwrapArgv` dispatch in `Run()`),
-  modeled on the OCI Runtime Spec. v0 wires bubblewrap only. (ADR-001 D7)
+- **Isolation backends** plug in behind the `tier` seam (`backendFor(tier)` in `Run()`), modeled on
+  the OCI Runtime Spec. Bubblewrap (Tier 1) and gVisor/runsc (Tier 2) are wired; Firecracker
+  (Tier 3) returns `tier not implemented`. (ADR-001 D7, ADR-002)
 - **Otherwise: extension is by source modification** — there is no plugin registry. The IPC
   contracts (vault/audit) are the integration points with the rest of the ecosystem.
