@@ -1,8 +1,7 @@
 # exec-sandbox — project instructions
 
 OS execution isolation. Runs untrusted agent-generated code with no network; the only egress
-is a credential-injecting proxy on a Unix socket. Go. PolyForm Noncommercial 1.0.0 (private
-during bootstrap).
+is a credential-injecting proxy on a Unix socket. Go. Apache-2.0.
 
 ## Invariants
 

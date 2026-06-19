@@ -85,9 +85,10 @@ this seam — modeled on the OCI Runtime Spec — without changing the `run()` c
 no-network + proxy-only-egress invariant. This is the project's deliberate composability
 boundary.
 
-### D8 — License: PolyForm Noncommercial 1.0.0
+### D8 — License: Apache-2.0
 
-Private during bootstrap; PolyForm Noncommercial 1.0.0 when public.
+Apache-2.0 — free to use, modify, and distribute, including in commercial and proprietary
+products. Exposes the block as a pluggable adapter seam without commercial-use restrictions.
 
 ## Consequences
 

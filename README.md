@@ -11,7 +11,7 @@ the sandbox at all.
 - **vault.inject at spawn** — pull-triggered push; presents `{handle, sandbox_identity}`, receives `{credential, binding}` (proxy) and injects it into allowlisted egress
 - **Audit emission** — spawn / inject / exit events to `audit-trail`
 
-> Prior-art verdict (from the project's internal design notes): **BUILD an open tiered orchestration harness** — adopt OCI runtimes (gVisor/Firecracker/Kata) as pluggable backends; derive Tier 1 from `@anthropic-ai/sandbox-runtime` (Apache-2.0). The value-add is the harness: policy→tier selection, vault credential injection, audit emission. **Language: Go** (bubblewrap/OCI/containerd ecosystem). **License: PolyForm Noncommercial 1.0.0.**
+> Prior-art verdict (from the project's internal design notes): **BUILD an open tiered orchestration harness** — adopt OCI runtimes (gVisor/Firecracker/Kata) as pluggable backends; derive Tier 1 from `@anthropic-ai/sandbox-runtime` (Apache-2.0). The value-add is the harness: policy→tier selection, vault credential injection, audit emission. **Language: Go** (bubblewrap/OCI/containerd ecosystem). **License: Apache-2.0.**
 
 ## Contract (interface-contracts.md §2, v1)
 
@@ -56,3 +56,26 @@ degradation to DNS-only when `CAP_NET_ADMIN` is unavailable (Apache-2.0). Evalua
 art: a **reference design, not an adopted dependency** — exec-sandbox
 stays a modular block (the OpenSandbox platform lacks pluggable policy-engine / external vault
 / separated audit-trail). See `exec-sandbox.md` §1.
+
+## License
+
+exec-sandbox is licensed under the **Apache License 2.0** — free to use, modify, and distribute, including in commercial and proprietary products. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+
+> **Security notice:** exec-sandbox is a security tool provided **as-is, without warranty**. It does not guarantee the security of any system. See the disclaimer in [NOTICE](NOTICE).
+
+## Enterprise Support
+
+Need hardened deployments, integration help, or a support SLA? **Commercial support and consulting are available.**
+
+📧 Contact **[tools@taylorguard.me](mailto:tools@taylorguard.me)**
+
+## Sponsorship
+
+exec-sandbox is independent, open-source security tooling. If it saves you time or risk, consider sponsoring continued development:
+
+- 💜 [GitHub Sponsors](https://github.com/sponsors/tkdtaylor)
+<!-- - 🤝 [Open Collective](https://opencollective.com/exec-sandbox)  (uncomment once the collective exists) -->
+
+## Contributing
+
+Contributions are welcome and become part of the project under Apache-2.0. See [CONTRIBUTING.md](CONTRIBUTING.md). We use the **Developer Certificate of Origin (DCO)** — sign off your commits with `git commit -s`. No CLA required.
