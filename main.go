@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // Command exec-sandbox is the OS execution-isolation block: it runs agent-generated code in
 // a bubblewrap sandbox with no network, routing egress through a credential-injecting proxy.
 // exec-sandbox owns the network boundary (--network none + host proxy + allowlist); vault

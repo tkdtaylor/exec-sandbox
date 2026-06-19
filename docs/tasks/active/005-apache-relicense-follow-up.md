@@ -16,16 +16,16 @@ Done in that commit:
 
 ## Remaining
 
-a. **SPDX headers** — add `// SPDX-License-Identifier: Apache-2.0` as the **first line** of every
-   first-party Go source file (`*.go`). Skip generated/vendored files. Including `_test.go` files is
-   optional but fine. Make this its **own commit**.
+a. ✅ **SPDX headers** — added `// SPDX-License-Identifier: Apache-2.0` as the first line of every
+   first-party Go source file (`*.go`, including `_test.go`). 10 tracked files; `.claude/worktrees/`
+   and `vendor/` skipped; no generated files. `go build ./...` and `gofmt -l` clean. Own commit.
 
-b. **Push** — push the relicense once public/private visibility is confirmed.
+b. ⬜ **Push** — push the relicense once public/private visibility is confirmed. (awaits user)
 
 ## Acceptance
 
-- SPDX header (`// SPDX-License-Identifier: Apache-2.0`) on every first-party `.go` file.
-- Relicense pushed to the remote.
+- ✅ SPDX header (`// SPDX-License-Identifier: Apache-2.0`) on every first-party `.go` file.
+- ⬜ Relicense pushed to the remote.
 
 ## Notes
 
