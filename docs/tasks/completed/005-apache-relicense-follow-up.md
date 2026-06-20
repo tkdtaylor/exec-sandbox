@@ -1,6 +1,6 @@
 # Task 005: Apache-2.0 relicense follow-up — SPDX headers + push
 
-**Status:** 🟡 follow-up open
+**Status:** ✅ complete
 
 ## Context
 
@@ -20,12 +20,13 @@ a. ✅ **SPDX headers** — added `// SPDX-License-Identifier: Apache-2.0` as th
    first-party Go source file (`*.go`, including `_test.go`). 10 tracked files; `.claude/worktrees/`
    and `vendor/` skipped; no generated files. `go build ./...` and `gofmt -l` clean. Own commit.
 
-b. ⬜ **Push** — push the relicense once public/private visibility is confirmed. (awaits user)
+b. ✅ **Push** — relicense pushed; commit `c78f2a6` (Apache-2.0 `LICENSE`/`NOTICE` + adoption
+   docs) is on `origin/main` (`github.com/tkdtaylor/exec-sandbox`).
 
 ## Acceptance
 
 - ✅ SPDX header (`// SPDX-License-Identifier: Apache-2.0`) on every first-party `.go` file.
-- ⬜ Relicense pushed to the remote.
+- ✅ Relicense pushed to the remote (`c78f2a6` on `origin/main`).
 
 ## Notes
 
