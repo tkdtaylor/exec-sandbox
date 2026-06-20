@@ -1,4 +1,4 @@
-# Task 018: Teardown + spec/diagram sync + no-NIC fitness function
+# Task 018: Teardown + spec/diagram sync + no-NIC & constraints-≥-jailer fitness functions
 
 **Status:** ⬜ backlog
 **Branch:** `task/018-teardown-spec-diagram-sync`
@@ -32,18 +32,28 @@ mounts `/work`/FileRead — but three things close it out:
 3. **No-NIC fitness function (the microVM F-001).** ADR 010's Consequences call for a fitness function
    asserting the generated config has no `network-interface` key — the third enforcement point of the
    no-network invariant alongside `bwrapArgv` and `gvisorOCISpec`. Plus the F-002 analogue
-   (credential-never-in-guest).
+   (credential-never-in-guest), **and** the **constraints-≥-jailer** rule introduced by ADR-010
+   Amendment 1 A1.Q3 (see below).
+4. **Constraints-≥-jailer fitness function (microVM, new — ADR-010 Amendment 1 A1.Q3).** Because
+   Tier-3 drops the Firecracker jailer and runs `firecracker` directly under the unprivileged
+   `bwrap --unshare-all` + `limits.go` model, exec-sandbox owns the obligation to faithfully reproduce
+   jailer-equivalent constraints. This task **registers** the fitness rule asserting **Tier-3
+   effective constraints ≥ jailer** — non-host uid, all namespaces unshared (none shared with host),
+   cgroup limits applied, chroot/`pivot_root` in effect, and (with A1.Q1) the credential/host FS never
+   leaking into the guest. Task 015's verification plan **exercises** this assertion against a live run
+   (TC-015-05); task 018 owns the rule's registration + negative case + umbrella wiring.
 
 **VMM-native snapshot stays OUT of scope (D6)** — one-shot teardown only.
 
 ## Coordinate with task 009
 
 Task 009 wires F-001/F-002/F-004 into per-rule `fitness-<id>` targets + a `fitness:` umbrella of the
-block rules (positive + negative cases, one inspectable rule list). This task **adds two firecracker
-rules to that same umbrella** — `fitness-no-nic` (microVM F-001) and `fitness-cred-not-in-guest`
-(microVM F-002) — reusing the no-NIC helper (task 013) and the microVM leak-scan helper (task 014).
-**Do not fork the runner**; extend task 009's umbrella rule list. If 018 lands before 009, stage the
-two rules so 009's umbrella picks them up (note the ordering in the PR).
+block rules (positive + negative cases, one inspectable rule list). This task **adds three firecracker
+rules to that same umbrella** — `fitness-no-nic` (microVM F-001), `fitness-cred-not-in-guest`
+(microVM F-002), and `fitness-constraints-ge-jailer` (microVM, ADR-010 Amendment 1 A1.Q3) — reusing
+the no-NIC helper (task 013), the microVM leak-scan helper (task 014), and the constraints inspection
+exercised in task 015. **Do not fork the runner**; extend task 009's umbrella rule list. If 018 lands
+before 009, stage the rules so 009's umbrella picks them up (note the ordering in the PR).
 
 ## Scope
 
@@ -62,12 +72,21 @@ two rules so 009's umbrella picks them up (note the ordering in the PR).
 - **`fitness-cred-not-in-guest`** (microVM F-002): asserts the credential never crosses the vsock
   into the guest (guest env/args/stdout); passes on current code, fails on a constructed guest leak;
   joins the umbrella.
-- **`docs/spec/fitness-functions.md`** gains the two firecracker enforcement points (extend F-001/
-  F-002 `Where enforced today`, or two new rows) in the same commit — present tense, `active`, real
-  `make fitness-no-nic` / `make fitness-cred-not-in-guest` check commands.
+- **`fitness-constraints-ge-jailer`** (microVM, ADR-010 Amendment 1 A1.Q3): asserts the Tier-3
+  launch's effective constraints are **≥ jailer** — non-host uid, all namespaces unshared (none shared
+  with host), cgroup limits applied, chroot/`pivot_root` in effect, and no jailer binary required;
+  passes on the bwrap-wrapped firecracker launch, fails on a constructed launch that shares a namespace
+  with the host / runs as the host uid / omits a cgroup limit; joins the umbrella. Reuses the
+  constraints inspection exercised in task 015 (TC-015-05).
+- **`docs/spec/fitness-functions.md`** gains the three firecracker enforcement points (extend F-001/
+  F-002 `Where enforced today` for the first two, plus a new row for constraints-≥-jailer) in the same
+  commit — present tense, `active`, real `make fitness-no-nic` / `make fitness-cred-not-in-guest` /
+  `make fitness-constraints-ge-jailer` check commands.
 
 Out of scope: VMM-native snapshot/restore (D6); warm-pool reuse (D6); re-authoring task 009's
-existing F-001..F-010 rules (reuse the umbrella). Do NOT modify `snapshot.go`.
+existing F-001..F-010 rules (reuse the umbrella); the live constraints *observation* against a booted
+guest (that is task 015's TC-015-05 — 018 owns the rule + negative case + umbrella registration). Do
+NOT modify `snapshot.go`.
 
 ## Verification plan
 
@@ -75,9 +94,9 @@ existing F-001..F-010 rules (reuse the umbrella). Do NOT modify `snapshot.go`.
   firecracker process / jailer cgroup / bundle dir survives a run (process table + filesystem), on
   every exit path. Requires `/dev/kvm` + firecracker + jailer; the `fitness-no-nic` config check and
   the leak-scan surface-build half run everywhere (L2/L3).
-- **Harness command:** `make fitness` (umbrella incl. the two new rules) and
-  `make fitness-no-nic fitness-cred-not-in-guest`;
-  `go test -count=1 -run 'FirecrackerTeardown|NoNIC|CredNotInGuest|Jailer' ./...`;
+- **Harness command:** `make fitness` (umbrella incl. the three new rules) and
+  `make fitness-no-nic fitness-cred-not-in-guest fitness-constraints-ge-jailer`;
+  `go test -count=1 -run 'FirecrackerTeardown|NoNIC|CredNotInGuest|ConstraintsGeJailer' ./...`;
   the teardown TCs under `/dev/kvm`; `go test -count=1 ./...`; `gofmt -l .`.
 - **Runtime observation (L5/L3):** paste the post-run process-table + filesystem check showing no
   firecracker/jailer process, no jailer cgroup, no bundle dir survives — including the timeout and
@@ -96,8 +115,10 @@ existing F-001..F-010 rules (reuse the umbrella). Do NOT modify `snapshot.go`.
 - `diagrams.md` shows the Firecracker tier + vsock egress; date bumped.
 - `fitness-no-nic` passes positive, fails on a constructed NIC config, and joins the `make fitness`
   umbrella; `fitness-cred-not-in-guest` passes positive, fails on a constructed guest leak, and joins
-  the umbrella.
-- `fitness-functions.md` records the two Firecracker enforcement points (present tense, `active`,
+  the umbrella; `fitness-constraints-ge-jailer` passes on the bwrap-wrapped firecracker launch, fails
+  on a constructed launch that weakens a constraint (shared namespace / host uid / missing cgroup
+  limit), and joins the umbrella.
+- `fitness-functions.md` records the three Firecracker enforcement points (present tense, `active`,
   real check commands) in the same commit.
 - `make fitness` green on the merged epic; `go test -count=1 ./...` green; `gofmt -l .` clean.
 - spec-verifier APPROVE + recorded L5 evidence before promotion to ✅.

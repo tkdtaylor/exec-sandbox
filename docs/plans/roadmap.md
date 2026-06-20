@@ -45,7 +45,7 @@ dispatch point so higher tiers slot in **without changing the `run()` contract**
 |----|------|--------|
 | 013 | Firecracker tier dispatch + config-generator skeleton (no-NIC by construction; no VMM launch). | 📋 ready — epic root |
 | 014 | No-NIC + vsock-bridge egress enforcement (the egress crux; credential never enters the guest). | 📋 ready after 013 — target L6 |
-| 015 | Guest boot: kernel image + rootfs + jailer launch. | ⚠️ blocked — ADR-010 Q1 (kernel/rootfs sourcing) + Q3 (jailer privilege model); needs ADR amendment |
+| 015 | Guest boot: kernel image + rootfs + **direct firecracker launch (no jailer)**. | 📋 ready after 013/014 — Q1+Q3 resolved (ADR-010 Amendment 1): build-from-source pinned kernel/rootfs; no jailer, unprivileged firecracker under bwrap (`kvm` group, no root) |
 | 016 | `profile.limits` → microVM machine-config mapping. | 📋 ready after 013/015 |
 | 017 | `/work` + FileRead mount semantics in the microVM. | ⚠️ Q2 (mount mechanism) — small in-task decision |
 | 018 | Teardown + spec/diagram sync + no-`network-interface` fitness function. | 📋 ready after 013–017 |

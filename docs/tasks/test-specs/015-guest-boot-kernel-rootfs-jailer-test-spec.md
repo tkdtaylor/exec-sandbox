@@ -1,38 +1,48 @@
-# Test Spec 015: Guest boot — kernel image + rootfs + jailer launch
+# Test Spec 015: Guest boot — kernel image + rootfs + direct firecracker launch (no jailer)
 
 **Linked task:** [`docs/tasks/backlog/015-guest-boot-kernel-rootfs-jailer.md`](../backlog/015-guest-boot-kernel-rootfs-jailer.md)
-**ADR:** ADR 010 D1 (drive Firecracker via REST-over-Unix-socket under the jailer), D3 (workload → guest kernel + rootfs + jailer, mirroring the OCI bundle). **BLOCKED on ADR 010 Q1 + Q3** (see Readiness) — likely an ADR-010 amendment before implementation.
+**ADR:** ADR 010 D1 (drive Firecracker via REST-over-Unix-socket), D3 (workload → guest kernel + rootfs, mirroring the OCI bundle), **Amendment 1 (2026-06-20)** — A1.Q1 (kernel/rootfs sourcing) + A1.Q3 (**no jailer**: direct `firecracker` under the unprivileged `bwrap --unshare-all` + `limits.go` model). **READY** (Q1 + Q3 resolved).
 **Written:** 2026-06-20
+
+> **Filename note:** the file still says `...-jailer` for stability (renaming is "ask first"), but the
+> **jailer is dropped** per ADR-010 Amendment 1 A1.Q3. Read "jailer" in older artifacts as "direct
+> firecracker under bwrap `--unshare-all` + `limits.go`."
 
 ## Context for the test author
 
-This task makes the microVM actually **boot and run the payload**: launch Firecracker under its
-`jailer` via the REST-over-Unix-socket API (`PUT /machine-config`, `/boot-source`, `/drives/...`,
-`/vsock`, then `PUT /actions {InstanceStart}`), boot the guest kernel + rootfs, run
-`/usr/bin/sh /payload.sh`, and capture stdout/stderr/exit through the **unchanged** host-side path
+This task makes the microVM actually **boot and run the payload**: launch Firecracker **directly**
+(no jailer — A1.Q3) under exec-sandbox's existing `bwrap --unshare-all` + `limits.go` unprivileged
+wrapper, via the REST-over-Unix-socket API (`PUT /machine-config`, `/boot-source`, `/drives/...`,
+`/vsock`, then `PUT /actions {InstanceStart}`), boot the **verified** guest kernel + rootfs (A1.Q1),
+run `/usr/bin/sh /payload.sh`, and capture stdout/stderr/exit through the **unchanged** host-side path
 in `Run()` (`run.go:154-194` — the `exec.CommandContext` + `capWriter` capture, the process-group
 kill, the exit-code mapping). The Firecracker process is the spawned child; the host-side capture,
 timeout kill, and output cap apply with no backend involvement (ADR 010 D4 — `timeout_sec` /
 `max_output_bytes` stay above the seam).
 
 This is the seam between the pure config generator (task 013) + egress wiring (task 014) and a real
-running guest. It is gated on two unresolved ADR-010 open questions.
+running guest. ADR-010 Amendment 1 resolved the two open questions that previously gated it.
 
-### PRECONDITION — BLOCKED on Q1 + Q3 (flagged prominently)
+### PRECONDITION — RESOLVED by ADR-010 Amendment 1 (2026-06-20)
 
-- **Q1 — Guest kernel + rootfs sourcing.** Where the `vmlinux` and the minimal rootfs come from
-  (build from source / vendor a pinned prebuilt / generate at first run) is **not established
-  anywhere in the repo**. It affects reproducibility, supply-chain scanning (`dep-scan` does not
-  cover a kernel image), and binary size. **Must be decided before this task is implemented** —
-  likely an ADR-010 amendment.
-- **Q3 — Jailer privilege/runtime model.** The jailer expects specific chroot/cgroup/uid setup and
-  often elevated setup privileges; how that reconciles with exec-sandbox's unprivileged
-  (`--rootless`-style) operation — where the namespace tiers run unprivileged — is **unresolved**.
-  It may constrain which hosts can run Tier-3.
+- **Q1 — Guest kernel + rootfs sourcing (RESOLVED).** Build the **uncompressed x86_64 ELF `vmlinux`**
+  (`make vmlinux`; **not** `bzImage`) + a minimal **Alpine ext4** rootfs **from source as build-time
+  tooling** (zero runtime third-party deps). Newest upstream-supported kernel line per Firecracker's
+  `kernel-policy.md`, **floor linux 6.1**; **FLAG:** 6.1 EOL **2026-09-02** — pin the newest non-EOL
+  line in upstream `resources/guest_configs/` at build time, preferring 6.1's successor if published.
+  **Vendor + pin** `vmlinux` + `vmlinux.sha256` + `microvm-kernel-ci-x86_64-<ver>.config` +
+  `PROVENANCE`; rootfs `is_read_only: true`, baking only the trusted vsock shim + `/sbin/init`, pinned
+  by `base.ext4.sha256`. A stdlib `crypto/sha256` loader verifies both digests and **fails fast** on
+  mismatch. The pin is the supply-chain control (`dep-scan` does not cover a kernel image).
+- **Q3 — Privilege model (RESOLVED): NO jailer.** Run `firecracker` **directly** under
+  `bwrap --unshare-all` + `limits.go`. Firecracker self-installs its seccomp filters regardless; bwrap
+  supplies the chroot + mnt/pid/ipc/net namespaces + cgroup limits the jailer would otherwise provide,
+  keeping Tier-3 **unprivileged** (consistent with Tier-1/2). **Host requirement:** KVM-capable
+  hardware + the host user in the `kvm` group (rw on `/dev/kvm`); **no root, no setuid launcher, no
+  caps beyond `/dev/kvm`**.
 
-The test cases below are written so they are **executable once Q1+Q3 are resolved**; the precise
-kernel/rootfs provenance assertions (TC-015-07) and the jailer privilege-model assertions
-(TC-015-05) are stated as placeholders to be tightened by the Q1/Q3 disposition.
+The precise kernel/rootfs provenance assertions (TC-015-07) and the **constraints ≥ jailer**
+assertions (TC-015-05) are now tightened to the Amendment 1 disposition (no longer placeholders).
 
 Ground truth to mirror:
 - The host-side capture path is tier-independent and already correct (`run.go:160-188`): stdout/
@@ -40,38 +50,41 @@ Ground truth to mirror:
   deadline, exit-code mapping (`ExitError` → code; other error → 127; timeout → 137 + `status:
   "timeout"`). This task does NOT modify it — it makes the firecracker child a well-behaved member
   of it.
-- Absence of `firecracker`/`jailer`/`/dev/kvm` is a spawn error (exit 127), never a silent
-  fall-back (ADR 010 D1; mirrors `gvisor.go:18-20`).
+- Absence of `firecracker`/`/dev/kvm` (or a `/dev/kvm` the host user cannot access) is a spawn error
+  (exit 127), never a silent fall-back (ADR 010 D1; mirrors `gvisor.go:18-20`). **No jailer binary is
+  a prerequisite** (A1.Q3).
 
 ## Requirements coverage
 
 | Req ID | Requirement | Test cases | Covered? |
 |--------|-------------|-----------|----------|
-| REQ-015-01 | `firecrackerBackend.Argv` returns an argv that launches `firecracker` under the `jailer` pointed at the per-run bundle (config + api socket); a cleanup func tears the bundle down (mirroring the gVisor bundle + cleanup) | TC-015-01, TC-015-02 | ✅ |
+| REQ-015-01 | `firecrackerBackend.Argv` returns an argv that launches `firecracker` **directly** (NO jailer — A1.Q3) under the existing `bwrap --unshare-all` + `limits.go` unprivileged wrapper, pointed at the per-run bundle (config + api socket); a cleanup func tears the bundle down (mirroring the gVisor bundle + cleanup) | TC-015-01, TC-015-02 | ✅ |
 | REQ-015-02 | The backend drives the Firecracker REST API over the Unix socket in order — machine-config → boot-source → drives → vsock → `InstanceStart` — and the guest boots and runs `/usr/bin/sh /payload.sh` | TC-015-03, TC-015-04 | ✅ |
-| REQ-015-03 | Firecracker runs under the jailer (cgroup/namespace barrier + chroot + privilege drop) per the Q3-resolved privilege model; the jailer is part of the launch, not optional | TC-015-05 | ✅ |
+| REQ-015-03 | The firecracker child's effective constraints are **≥ jailer** (A1.Q3): runs as a non-host uid, all namespaces unshared (none shared with host), cgroup limits applied, chroot/`pivot_root` in effect — supplied by `bwrap --unshare-all` + `limits.go`, with firecracker self-installing seccomp regardless. Exercises the task-018 constraints-≥-jailer fitness assertion against a live run | TC-015-05 | ✅ |
 | REQ-015-04 | stdout/stderr/exit_code flow through the UNCHANGED host-side capture path in `Run()` — `capWriter` caps, process-group kill on timeout, exit-code mapping (clean exit, non-zero exit, timeout=137) — with no change to that path | TC-015-06, TC-015-08, TC-015-09 | ✅ |
-| REQ-015-05 | The guest kernel image + rootfs are sourced per the Q1-resolved provenance (pinned/reproducible), and their provenance is recorded; absence of the kernel/rootfs or `/dev/kvm`/`firecracker`/`jailer` is a spawn error (exit 127), never a silent fall-back to a weaker tier | TC-015-07, TC-015-10 | ✅ |
+| REQ-015-05 | The guest kernel image + rootfs are sourced per A1.Q1 (built-from-source, vendored + pinned by sha256, RO rootfs) and **verified by a stdlib `crypto/sha256` loader that fails fast on mismatch**; provenance is recorded (`PROVENANCE`); absence of the kernel/rootfs or `/dev/kvm`/`firecracker`, or an inaccessible `/dev/kvm` (host user not in `kvm` group), is a spawn error (exit 127), never a silent fall-back to a weaker tier. NO jailer binary is a prerequisite | TC-015-07, TC-015-10 | ✅ |
 
 ## Pre-implementation checklist
 
 - [x] All test cases below are defined
-- [x] **BLOCKED marker recorded:** Q1 (kernel/rootfs sourcing) + Q3 (jailer privilege model) must be resolved (ADR-010 amendment) before implementation
+- [x] **UNBLOCKED:** Q1 (kernel/rootfs sourcing) + Q3 (no jailer; unprivileged firecracker) resolved by ADR-010 Amendment 1 (2026-06-20) — this task is READY
 - [x] Every REQ-ID has at least one test case
 - [x] Confirmed: the host-side capture path in `Run()` is NOT modified by this task
-- [x] Target verification level: L5 (validation harness boots a guest, runs a payload, captures stdout/exit end-to-end) — requires `/dev/kvm` + firecracker + jailer + the Q1 kernel/rootfs; integration tests skip-guard when absent
+- [x] Target verification level: L5 (validation harness boots a guest, runs a payload, captures stdout/exit end-to-end) — requires `/dev/kvm` (host user in `kvm` group) + firecracker + the A1.Q1 verified kernel/rootfs; **no jailer binary**; integration tests skip-guard when absent
 
 ---
 
 ## Test cases
 
-### TC-015-01: Argv returns a jailer-wrapped firecracker launch + a bundle cleanup func
+### TC-015-01: Argv returns a direct firecracker launch under bwrap (NO jailer) + a bundle cleanup func
 
 - **Requirement:** REQ-015-01
 - **Type:** unit (Go test)
 - **Input:** `firecrackerBackend.Argv(scriptPath, proxySock, workdir, fileReads, env, lim)`.
-- **Expected:** `argv[0]` is the `jailer` (or a launcher that invokes the jailer); the argv names
-  the `firecracker` binary, the per-run api socket, and the config/bundle dir; a non-nil cleanup
+- **Expected:** the argv launches the **`firecracker`** binary **directly** under exec-sandbox's
+  existing `bwrap --unshare-all` + `limits.go` wrapper (A1.Q3) — **no `jailer` in `argv[0]` or
+  anywhere in the argv**; the argv names the `firecracker` binary, the per-run api socket, and the
+  config/bundle dir; `--unshare-all` is present and **no `--share-net`** appears; a non-nil cleanup
   func is returned that removes the bundle dir (mirroring `gvisorBackend.Argv`'s `cleanup` at
   `gvisor.go:22-26`).
 
@@ -102,15 +115,24 @@ Ground truth to mirror:
   the payload genuinely executed as `/usr/bin/sh /payload.sh` inside the booted guest. Skip-guard
   when prerequisites are absent.
 
-### TC-015-05: Firecracker runs under the jailer (Q3 privilege model)
+### TC-015-05: firecracker's effective constraints are ≥ jailer (A1.Q3, no jailer)
 
 - **Requirement:** REQ-015-03
 - **Type:** integration (Go test) + inspection — target L5
-- **Input:** inspect the launch argv and (when running) the live process tree / cgroup placement.
-- **Expected:** the firecracker process is a child of the jailer, placed in the jailer's
-  cgroup/namespace barrier and chroot, with privileges dropped per the **Q3-resolved** model
-  (tighten this assertion to the chosen privilege model once Q3 is settled). The jailer is never
-  bypassed.
+- **Input:** inspect the launch argv and (when running) the live process tree / namespace + cgroup +
+  uid placement of the firecracker child. This exercises the **task-018 constraints-≥-jailer fitness
+  assertion** against a live run.
+- **Expected:** there is **no jailer** in the launch; instead the firecracker child runs under
+  `bwrap --unshare-all` + `limits.go` with effective constraints **≥ jailer**:
+  - runs as a **non-host uid** (not the host user's uid),
+  - **all namespaces unshared** — mnt/pid/ipc/**net**/user — none shared with the host,
+  - **cgroup limits applied** (the `limits.go` machinery),
+  - **chroot / `pivot_root` in effect** (the guest VMM cannot see the host FS root),
+  - and (with A1.Q1) the credential / host FS never leaks into the guest.
+
+  Firecracker self-installs its seccomp filters regardless of any launcher; assert the filters are
+  active. The point is jailer-*equivalent* (or stronger) containment without the jailer binary or any
+  elevated privilege.
 
 ### TC-015-06: clean payload exit maps to exit_code 0 via the unchanged capture path
 
@@ -121,15 +143,23 @@ Ground truth to mirror:
   same `capWriter` path as the other tiers (`run.go:160-161`). The host-side capture code is
   unchanged (assert by diff that `run.go`'s capture block is untouched).
 
-### TC-015-07: kernel + rootfs provenance recorded (Q1 disposition)
+### TC-015-07: kernel + rootfs are pinned, verified by sha256, and fail fast on mismatch (A1.Q1)
 
 - **Requirement:** REQ-015-05
-- **Type:** inspection (spec/ADR) — placeholder, tighten per Q1
-- **Input:** read the Q1 disposition (ADR-010 amendment) + the spec note on kernel/rootfs sourcing.
-- **Expected:** the `vmlinux` + rootfs provenance is pinned and recorded (a pinned prebuilt hash, a
-  build recipe, or a generation procedure — whichever Q1 chooses), with the supply-chain stance
-  noted (dep-scan does not cover a kernel image, so the pin is the control). No unpinned
-  fetch-at-run.
+- **Type:** inspection (spec/ADR) + unit (Go test)
+- **Input:** read the A1.Q1 disposition (ADR-010 Amendment 1) + the vendored artifacts
+  (`guest/kernel/vmlinux-<ver>` + `vmlinux.sha256` + `config/PROVENANCE`,
+  `guest/rootfs/base.ext4` + `base.ext4.sha256`); unit-test the stdlib `crypto/sha256` loader by
+  feeding it a good artifact (passes) and a tampered/wrong-digest artifact (errors).
+- **Expected:**
+  - `vmlinux` is the **uncompressed x86_64 ELF** (built `make vmlinux`, not `bzImage`); the rootfs is
+    a minimal **Alpine ext4** mounted `is_read_only: true`, carrying only the trusted shim +
+    `/sbin/init` (no baked-in payload).
+  - both artifacts are **vendored + pinned by sha256**, with `PROVENANCE` recording the upstream
+    Firecracker commit + linux git tag; the config is `microvm-kernel-ci-x86_64-<ver>.config`.
+  - the loader **verifies both digests before the backend uses the paths** and **fails fast / crashes
+    loudly** on mismatch (no boot from an unverified artifact). No unpinned fetch-at-run; the pin is
+    the supply-chain control (`dep-scan` does not cover a kernel image).
 
 ### TC-015-08: non-zero payload exit is propagated
 
@@ -149,12 +179,13 @@ Ground truth to mirror:
   outlives the deadline. This proves `timeout_sec` stays host-side above the seam (ADR 010 D4),
   identical to the bubblewrap/gVisor behavior.
 
-### TC-015-10: missing firecracker/jailer/kvm is a spawn error (exit 127), no fall-back
+### TC-015-10: missing firecracker / inaccessible kvm is a spawn error (exit 127), no fall-back
 
 - **Requirement:** REQ-015-05
 - **Type:** unit/integration (Go test)
-- **Input:** run the firecracker tier on a host where `firecracker`/`jailer` is not on PATH (or
-  `/dev/kvm` is absent).
+- **Input:** run the firecracker tier on a host where `firecracker` is not on PATH, or `/dev/kvm` is
+  absent, or `/dev/kvm` exists but the host user is **not in the `kvm` group** (no rw access). **No
+  jailer binary is checked for — it is not a prerequisite (A1.Q3).**
 - **Expected:** the run yields `exit_code 127` (a spawn error surfaced through the host path), NOT a
   silent fall-back to bubblewrap or gVisor. Mirrors the gVisor `runsc`-absent behavior.
 
@@ -162,20 +193,23 @@ Ground truth to mirror:
 
 ## Post-implementation verification
 
-- [ ] **Q1 + Q3 resolved (ADR-010 amendment) BEFORE implementation** — this is the unblock gate
-- [ ] TC-015-01..02: jailer-wrapped argv + bundle create/teardown
+- [x] **Q1 + Q3 resolved (ADR-010 Amendment 1, 2026-06-20)** — the unblock gate is cleared
+- [ ] TC-015-01..02: direct-firecracker (no jailer) argv under bwrap + bundle create/teardown
 - [ ] TC-015-03: REST PUT order correct, NO `network-interfaces` PUT
 - [ ] TC-015-04: guest boots, payload prints HELLO-FROM-GUEST, exit 0 (L5)
-- [ ] TC-015-05: firecracker runs under the jailer per the Q3 model
+- [ ] TC-015-05: firecracker's effective constraints ≥ jailer (no jailer; A1.Q3)
 - [ ] TC-015-06/08/09: exit-code mapping (0, non-zero, timeout=137) via the unchanged capture path
-- [ ] TC-015-07: kernel/rootfs provenance pinned + recorded (Q1)
-- [ ] TC-015-10: missing prereq → exit 127, no fall-back
+- [ ] TC-015-07: kernel/rootfs pinned + sha256-verified, fails fast on mismatch (A1.Q1)
+- [ ] TC-015-10: missing firecracker / inaccessible kvm → exit 127, no fall-back
 
 ## Test framework notes
 
-- Standard Go `testing`. The unit-level tests (TC-015-01/02/03 against a fake REST endpoint, and
-  TC-015-10) run without `/dev/kvm`. The boot/run/timeout tests (TC-015-04/05/06/08/09) need
-  `/dev/kvm` + firecracker + jailer + the Q1 kernel/rootfs and MUST skip-guard when absent.
+- Standard Go `testing`. The unit-level tests (TC-015-01/02/03 against a fake REST endpoint, the
+  sha256-loader half of TC-015-07, and TC-015-10) run without `/dev/kvm`. The boot/run/timeout/
+  constraints tests (TC-015-04/05/06/08/09) need `/dev/kvm` (host user in the `kvm` group) +
+  firecracker + the A1.Q1 verified kernel/rootfs and MUST skip-guard when absent. **No jailer binary
+  is required** (A1.Q3).
 - Do NOT modify `Run()`'s host-side capture block — TC-015-06 asserts it is untouched by diff.
-- **Depends on task 013 (config skeleton) and task 014 (egress wiring) landing first, and is BLOCKED
-  on Q1 + Q3 being resolved.** Mark the coverage row `⚠️ planned, BLOCKED on Q1+Q3`.
+- **Depends on task 013 (config skeleton) and task 014 (egress wiring) landing first.** Q1 + Q3 are
+  resolved (ADR-010 Amendment 1), so this task is **no longer blocked** — mark the coverage row
+  `📋 planned (ready)`.

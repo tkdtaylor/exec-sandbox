@@ -1,6 +1,6 @@
 # ADR 010 — Firecracker (microVM) Tier-3 backend behind the tier seam
 
-**Status:** accepted — the core decision (Option A: Firecracker behind the seam, no-NIC + vsock-bridged egress, jailer-launched) is committed. Q1–Q4 remain **task-scoped open questions**, which is a normal accepted-ADR state: Q1 (kernel/rootfs sourcing) + Q3 (jailer privilege model) gate task 015 and are expected to land as an ADR-010 amendment; Q2 (mount mechanism) is resolved in task 017; Q4 (vsock shim location) is resolved in task 014. The task decomposition (013–018) carries the work; see the coverage tracker for the dependency-ordered status.
+**Status:** accepted — the core decision (Option A: Firecracker behind the seam, no-NIC + vsock-bridged egress) is committed. Q1 (kernel/rootfs sourcing) + Q3 (jailer privilege model) are **resolved in Amendment 1 (2026-06-20)** — Q1: build `vmlinux` + Alpine RO rootfs from source as pinned build-time artifacts; Q3: **no jailer** — run `firecracker` directly under the existing unprivileged `bwrap --unshare-all` + `limits.go` model. Q2 (mount mechanism) is resolved in task 017; Q4 (vsock shim location) is resolved in task 014. The task decomposition (013–018) carries the work; see the coverage tracker for the dependency-ordered status.
 **Date:** 2026-06-20 (accepted 2026-06-20)
 **Related:** ADR 001 D7 (tier seam: `bubblewrap | gvisor | firecracker`), ADR 002 (gVisor Tier-2
 backend — the OCI bundle/spec pattern this ADR extends), ADR 006 (hyperlight Tier-4 watching
@@ -299,20 +299,143 @@ scopes the work; the task decomposition (tasks 013–018) carries it.
 These could **not** be settled from the current repository and must be decided during
 implementation (likely in the first task or a follow-up ADR amendment):
 
-- **Q1 — Guest kernel + rootfs sourcing.** Where the `vmlinux` guest kernel image and the minimal
-  rootfs come from (build from source, vendor a pinned prebuilt, or generate at first run) is not
-  established anywhere in the repo. This affects reproducibility, supply-chain scanning (`dep-scan`
-  does not cover a kernel image), and binary size. **Decide before the rootfs/boot task.**
+- **Q1 — Guest kernel + rootfs sourcing.** **RESOLVED → see Amendment 1 (2026-06-20).** Where the
+  `vmlinux` guest kernel image and the minimal rootfs come from (build from source, vendor a pinned
+  prebuilt, or generate at first run) is not established anywhere in the repo. This affects
+  reproducibility, supply-chain scanning (`dep-scan` does not cover a kernel image), and binary size.
+  **Decide before the rootfs/boot task.**
 - **Q2 — `/work` and `FileRead` mount semantics in a microVM.** Bubblewrap/gVisor bind-mount host
   paths (ADR 004/005). A microVM has no host bind-mount; the writable `/work` and read-only FileRead
   paths must be presented via a block device, a virtio-fs share, or a copy-in/copy-out at
   boot/teardown. Each has different isolation and performance trade-offs and none is decided. The
   read-only-ness of FileRead and the single-writable-surface property (ADR 005) must be preserved
   whatever mechanism is chosen.
-- **Q3 — Jailer privilege/runtime model.** The jailer expects specific chroot/cgroup/uid setup and
-  often elevated setup privileges; how that reconciles with exec-sandbox's unprivileged
-  (`--rootless`-style) operation on hosts where the namespace tiers run unprivileged is unresolved.
-  May constrain which hosts can run Tier-3.
+- **Q3 — Jailer privilege/runtime model.** **RESOLVED → see Amendment 1 (2026-06-20).** The jailer
+  expects specific chroot/cgroup/uid setup and often elevated setup privileges; how that reconciles
+  with exec-sandbox's unprivileged (`--rootless`-style) operation on hosts where the namespace tiers
+  run unprivileged is unresolved. May constrain which hosts can run Tier-3.
 - **Q4 — vsock shim location and lifecycle.** Whether the guest-side `/proxy.sock` shim ships inside
   the rootfs image, is injected at boot, or is the guest `init` itself — and how its dumbness is
   audited — is a design choice for the egress task.
+
+## Amendment 1 (2026-06-20) — Q1 + Q3 resolved
+
+This amendment resolves the two open questions that gated task 015: **Q1 (guest kernel + rootfs
+sourcing)** and **Q3 (jailer privilege model)**. It does **not** rewrite the D1–D6 decision body
+above — that record stands; the one substantive change it makes to the original text is dropping the
+Firecracker **jailer** in favour of running the `firecracker` binary directly under exec-sandbox's
+existing unprivileged model (see A1.Q3). Where D1/D3/Option A/Decision say "under the jailer," read
+"directly, with bwrap `--unshare-all` + `limits.go` supplying jailer-equivalent isolation" per A1.Q3
+below. The egress model (D2), limits mapping (D4), snapshot stance (D5), and scope boundary (D6) are
+unchanged. Q2 (task 017) and Q4 (task 014) remain task-scoped open questions.
+
+### A1.Q1 — Guest kernel + rootfs sourcing (RESOLVED)
+
+**Kernel.** Build the guest kernel **from source as build-time tooling** (CLAUDE.md permits
+build-time tooling; this keeps runtime third-party deps at zero). Target the newest
+upstream-supported kernel line per Firecracker's `kernel-policy.md`, with **linux 6.1 as the floor**.
+
+> **FLAG for task 015:** linux 6.1's upstream support ends **2026-09-02** (~2.5 months from this
+> amendment). Task 015 must pin the **newest non-EOL line available in upstream
+> `resources/guest_configs/` at build time**, preferring 6.1's successor if one is published. Do not
+> hard-code 6.1 if a newer supported line exists.
+
+Build the **uncompressed x86_64 ELF `vmlinux`** (`make vmlinux`) — `bzImage` is **not** the supported
+x86_64 boot path for Firecracker. Boot args are `console=ttyS0 reboot=k panic=1`; with **no
+virtio-net device** the guest kernel simply has no NIC, so **do not add an `ip=` arg** (there is no
+interface to configure — this reinforces D2's no-NIC-by-construction stance at the kernel-cmdline
+level).
+
+**Vendor three pinned things into the repo** (the pin is the supply-chain control — `dep-scan` does
+not cover a kernel image):
+
+1. the `vmlinux` artifact,
+2. its `sha256`,
+3. a copied-in `microvm-kernel-ci-x86_64-<ver>.config` **plus a `PROVENANCE` note** recording the
+   upstream Firecracker commit + the linux git tag the build came from.
+
+**Rootfs.** A minimal **Alpine** ext4 image, built reproducibly at build time, mounted
+**`is_read_only: true`**. The RO base bakes in the only two trusted guest binaries — the
+project-authored **vsock→`/proxy.sock` forwarding shim** (part of the TCB, task 014) and `/sbin/init`.
+The **per-run untrusted payload is never baked into the base** (that would churn the base digest and
+defeat scan-once/pin-once); it is injected by **copy-in to a separate writable drive** (or the
+existing writable `/work` surface, per Q2/task 017). Pin `base.ext4` by `sha256`.
+
+**Verification.** A Go loader using stdlib `crypto/sha256` verifies **both** digests
+(`vmlinux.sha256`, `base.ext4.sha256`) before the firecracker backend uses the paths, and
+**fails fast / crashes loudly** on any mismatch (the project's "fail fast, crash loudly" principle —
+a tampered or wrong artifact is a hard error, never a silent boot). The RO base maps cleanly onto the
+snapshot/restore reset boundary (D5): scan once, reuse every run, reset for free. Both artifacts are
+ordinary files scannable by the project's `code-scanner`; **no runtime Go dependency is added**.
+
+**Recommended file layout** (record for task 015):
+
+```
+guest/
+  kernel/  vmlinux-<ver>  vmlinux.sha256  config/microvm-kernel-ci-x86_64-<ver>.config  config/PROVENANCE
+  rootfs/  base.ext4  base.ext4.sha256  build.sh   # RO base: vsock shim + /sbin/init; build.sh is build-time only
+```
+
+### A1.Q3 — Jailer privilege model (RESOLVED): no jailer; direct firecracker, unprivileged
+
+**Decision: do NOT adopt the Firecracker jailer.** Run the `firecracker` binary **directly** under
+exec-sandbox's existing unprivileged model, reconstructing jailer-equivalent isolation with the
+`bwrap --unshare-all` + `limits.go` machinery the project already owns. This supersedes D1/D3/Option
+A/Decision's "under the jailer" wording.
+
+**Rationale (tied to the untrusted-code threat model):**
+
+1. **The jailer requires root.** Its minimum capability set has been officially "to be determined"
+   for years — there is no maintainer-certified cap-only profile; the union it exercises is
+   `CAP_SYS_ADMIN + CAP_CHOWN + CAP_MKNOD + CAP_SETUID/SETGID + CAP_SYS_CHROOT`, i.e. effectively
+   root. Adopting it would make **Tier-3 the one tier demanding a privileged host** — a structural
+   regression precisely on the tier meant for the *highest-risk* code, and a far larger attack
+   surface than the narrow `/dev/kvm` device permission.
+2. **Firecracker self-installs its seccomp filters regardless of the jailer.** The highest-value
+   syscall-attack-surface reduction does **not** depend on the jailer. Every *other* jailer layer
+   (chroot, mnt/pid/ipc/net namespaces, cgroup caps, per-instance uid) is **already constructed** by
+   exec-sandbox's `bwrap --unshare-all` + `limits.go` — arguably more thoroughly in the unprivileged
+   path.
+3. **Firecracker's own `prod-host-setup.md` blesses "process constraints equal or more restrictive
+   than the jailer"** as the production contract — the contract is jailer-*equivalent* constraints,
+   not the jailer binary specifically. **Kata's rootless-VMM pattern** (run the VMM directly as a
+   non-root user with `kvm` as a supplemental group, `crw-rw---- root:kvm`) is the documented non-root
+   precedent.
+
+**Host-requirement statement for Tier-3 (verbatim — also recorded in task 015):**
+
+> Tier-3 (Firecracker) requires KVM-capable hardware and the exec-sandbox host user to be a member of
+> the `kvm` group (or an equivalent ACL granting rw on `/dev/kvm`). It requires NO root, NO setuid
+> launcher, and NO elevated capabilities beyond `/dev/kvm` access — preserving the Tier-1/2
+> unprivileged invariant. The bwrap `--unshare-all` wrapper supplies the chroot + mnt/pid/ipc/net
+> namespaces + cgroup limits the jailer would otherwise provide; firecracker self-installs its
+> seccomp filters regardless.
+
+**Accepted risk + test obligation.** By skipping the jailer, exec-sandbox takes on responsibility for
+faithfully reproducing jailer-equivalent constraints. This is discharged with a **new fitness
+function** — the microVM analogue alongside the no-`network-interface` rule — asserting **Tier-3
+effective constraints ≥ jailer**:
+
+- runs as a non-host uid,
+- all namespaces unshared (none shared with the host),
+- cgroup limits applied,
+- chroot / `pivot_root` in effect,
+- and (with A1.Q1) the credential / host FS never leaks into the guest.
+
+This fitness rule is **registered in task 018** (alongside the no-NIC fitness function it already
+owns) and its assertion is **exercised in task 015's verification plan**.
+
+### Amendment 1 consequences
+
+- D1/D3/Option A/Decision's "jailer" references now mean "direct `firecracker` under bwrap
+  `--unshare-all` + `limits.go`." No jailer binary is a Tier-3 prerequisite; the prerequisites are
+  `/dev/kvm` rw (via `kvm` group) + the `firecracker` binary + the pinned guest kernel/rootfs. Tier-3
+  stays **unprivileged**, consistent with Tier-1/Tier-2.
+- The repo gains a small **build-time** kernel/rootfs build path (`guest/.../build.sh`) and three
+  vendored, pinned, scannable artifacts (`vmlinux`, `base.ext4`, their `sha256`s + a `PROVENANCE`
+  note). Runtime third-party deps remain **zero**; a stdlib `crypto/sha256` loader gates use of the
+  artifacts and fails closed on mismatch.
+- The Tier-3 host-prerequisite story is now strictly smaller than the original jailer-based one: the
+  one new device permission (`/dev/kvm`) replaces "a privileged/root setup phase."
+- Task 018 owns an **additional** fitness rule (constraints ≥ jailer) beyond the no-NIC and
+  cred-not-in-guest rules; task 015's verification plan exercises it. Task 015 is **unblocked**.
