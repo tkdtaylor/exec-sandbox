@@ -176,7 +176,7 @@ On an early failure (proxy could not start) the result is instead `{ "error": st
 ### Format: `vault.inject` request / response (Unix-socket JSON-line)
 
 - **Producer / consumer:** `vaultInject` (`run.go`) ⇄ vault.
-- **Request:** `{ "op": "inject", "handle": string, "sandbox_identity": {sandbox_id, attestation}, "mode": string }`
+- **Request:** `{ "op": "inject", "handle": string, "sandbox_identity": {sandbox_id, nonce, ts, attestation_pubkey, attestation}, "mode": string }` — see `sandbox_identity` below for the signed-attestation shape.
 - **Response (proxy mode):** `{ "delivery": "proxy", "credential": string, "binding": { "host": string, "header": string, "scheme": string } }` — `header` defaults to `Authorization`, `scheme` to `Bearer` if absent.
 - **Response (env mode):** `{ "delivery": "env", … }` (recorded but not loaded onto the proxy).
 - **Error:** a non-nil `error` field, or a transport error, triggers an `inject_failed` audit event and the handle is skipped.
@@ -193,9 +193,40 @@ On an early failure (proxy could not start) the result is instead `{ "error": st
 
 ### `sandbox_identity`
 
-`{ "sandbox_id": "sbx-<6 hex bytes>", "attestation": "<16 hex bytes>" }` — minted per run with
-`crypto/rand`. (TODO: the attestation is currently random bytes, not a signed attestation; v1
-adds signatures per the README.)
+```json
+{
+  "sandbox_id": "sbx-<6 hex bytes>",
+  "nonce": "<16 hex bytes>",
+  "ts": "<RFC3339 timestamp>",
+  "attestation_pubkey": "<32-byte ed25519 public key, hex>",
+  "attestation": "<64-byte ed25519 signature, hex>"
+}
+```
+
+Minted per run by `mintAttestation` (`attestation.go`) as a **signed self-attestation** (ADR 014).
+Each run generates a fresh ephemeral `crypto/ed25519` keypair and signs the canonical preimage of
+the **attested fields** `{sandbox_id, nonce, ts}`:
+
+```
+"exec-sandbox/attestation/v1\n" + LP(sandbox_id) + LP(nonce) + LP(ts)
+```
+
+where `LP(s)` is the 4-byte big-endian length of `s` followed by `s`'s bytes (length-prefixing
+removes field-boundary ambiguity). `nonce` (fresh `crypto/rand` 16 bytes) and `ts` give replay
+resistance.
+
+- **`attestation`** is the hex-encoded 64-byte ed25519 signature over that preimage.
+- **`attestation_pubkey`** is the hex-encoded 32-byte verify key — the **verify-key source**: the
+  consumer (vault) verifies internal consistency with the in-identity public key, since vault's
+  trust anchor is the uid-restricted socket + single-use handle binding, not a host key (ADR 014).
+- **Verify:** `verifyAttestation(identity)` (`attestation.go`) rebuilds the preimage from the
+  attested fields, decodes `attestation_pubkey` + `attestation`, and returns
+  `ed25519.Verify(pub, preimage, sig)`. Mint and verify share one `attestationPreimage` helper, so
+  mutating any attested field or the signature breaks verification.
+
+The signing **private key is ephemeral** and never leaves `mintAttestation` — it enters none of the
+result, audit events, sandbox env/args, payload, or stdout (mirrors the F-002 credential
+discipline); only the public key and signature are externally visible.
 
 ---
 

@@ -64,7 +64,14 @@ func Run(req RunRequest) map[string]any {
 	}
 
 	sandboxID := "sbx-" + randHex(6)
-	sandboxIdentity := map[string]any{"sandbox_id": sandboxID, "attestation": randHex(16)}
+	// Signed self-attestation (ADR 014): mint a fresh ephemeral ed25519 keypair, sign the canonical
+	// preimage of {sandbox_id, nonce, ts}, and carry the public key + signature in sandbox_identity.
+	// The signing PRIVATE key never leaves mintAttestation — it enters none of the result, audit
+	// events, sandbox env/args, payload, or stdout (mirrors the F-002 credential discipline).
+	sandboxIdentity, err := mintAttestation(sandboxID)
+	if err != nil {
+		return map[string]any{"error": "attestation mint failed: " + err.Error()}
+	}
 	emit(req.Wiring.AuditSocket, map[string]any{
 		"actor": "exec-sandbox", "action": "spawn", "target": sandboxID, "decision": "allow",
 		"context": map[string]any{"tier": req.Run.Tier, "request_id": req.Wiring.RequestID},
