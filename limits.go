@@ -2,6 +2,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os/exec"
@@ -12,11 +13,12 @@ import (
 // "no limit" — the corresponding cap is simply not applied. The per-backend enforcement
 // mechanism (POSIX rlimits + tmpfs sizing + CPU affinity + host-side kill) is ADR 003.
 type Limits struct {
-	CPUCount  int           // cpu_count:  cores, enforced as taskset affinity; 0 = unset
-	MemoryMB  int           // memory_mb:  RLIMIT_AS ceiling, in MiB; 0 = unset
-	PidsLimit int           // pids:       RLIMIT_NPROC; 0 = unset
-	DiskMB    int           // disk_mb:    writable-layer (tmpfs) size, in MiB; 0 = unset
-	Timeout   time.Duration // timeout_sec: wall-clock, host-side kill; 0 = unset
+	CPUCount       int           // cpu_count:        cores, enforced as taskset affinity; 0 = unset
+	MemoryMB       int           // memory_mb:        RLIMIT_AS ceiling, in MiB; 0 = unset
+	PidsLimit      int           // pids:             RLIMIT_NPROC; 0 = unset
+	DiskMB         int           // disk_mb:          writable-layer (tmpfs) size, in MiB; 0 = unset
+	Timeout        time.Duration // timeout_sec:      wall-clock, host-side kill; 0 = unset
+	MaxOutputBytes int           // max_output_bytes: per-stream host capture ceiling (bytes); 0 = no cap (unbounded). Host-side, above the tier seam (ADR 007).
 }
 
 // parseLimits reads profile.limits into a Limits. A missing limits key, a non-numeric value, or a
@@ -31,6 +33,7 @@ func parseLimits(profile map[string]any) Limits {
 	lim.MemoryMB = posInt(raw["memory_mb"])
 	lim.PidsLimit = posInt(raw["pids"])
 	lim.DiskMB = posInt(raw["disk_mb"])
+	lim.MaxOutputBytes = posInt(raw["max_output_bytes"])
 	if sec := posInt(raw["timeout_sec"]); sec > 0 {
 		lim.Timeout = time.Duration(sec) * time.Second
 	}
@@ -101,3 +104,49 @@ func prlimitWrap(lim Limits, cmd []string) ([]string, error) {
 	out = append(out, "--")
 	return append(out, cmd...), nil
 }
+
+// capWriter is the host-side output ceiling for one captured stream (ADR 007). It retains at most
+// cap bytes in buf and DISCARDS everything past the ceiling, while always reporting every Write as
+// fully consumed (n == len(p), err == nil). This is deliberate: the cap is a host memory guard, not
+// a payload signal — if Write returned a short count or an error, os/exec's output-copy goroutine
+// could surface a broken pipe to the child and change its exit code or deadlock it. The payload
+// runs to its natural completion; only the host's retained copy is truncated.
+//
+// cap <= 0 means "no cap": every byte is retained (unbounded — the prior behavior). overflowed
+// reports whether any byte was dropped — writing exactly cap bytes does NOT set it; writing cap+1
+// does. It flags "bytes were dropped," not "the cap was reached."
+//
+// A capWriter is written by a single stream's copy goroutine and read only after cmd.Run() joins
+// those goroutines, so it needs no internal locking; the two streams (stdout/stderr) each get their
+// own capWriter and are capped independently at the same ceiling.
+type capWriter struct {
+	buf        bytes.Buffer
+	cap        int  // per-stream ceiling in bytes; <= 0 means unbounded
+	overflowed bool // true once any byte has been dropped (len written > cap)
+}
+
+// newCapWriter returns a capWriter with the given per-stream ceiling. cap <= 0 ⇒ unbounded.
+func newCapWriter(cap int) *capWriter {
+	return &capWriter{cap: cap}
+}
+
+// Write retains up to the ceiling and drops the rest, but always reports len(p) bytes written with
+// a nil error so the child's pipe never sees a short write or error (see the type comment).
+func (w *capWriter) Write(p []byte) (int, error) {
+	if w.cap <= 0 {
+		return w.buf.Write(p)
+	}
+	remaining := w.cap - w.buf.Len() // free space before the ceiling (can be 0)
+	take := len(p)
+	if take > remaining {
+		take = remaining
+		w.overflowed = true // this write had bytes that did not fit — they are dropped
+	}
+	if take > 0 {
+		w.buf.Write(p[:take])
+	}
+	return len(p), nil
+}
+
+// String returns the retained (possibly truncated) output.
+func (w *capWriter) String() string { return w.buf.String() }

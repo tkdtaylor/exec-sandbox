@@ -95,11 +95,12 @@ mounted read-only toolchain dir on PATH so a payload can `command -v <tool>` and
 
 ```
 "limits": {
-  "cpu_count":   int,   // cores; enforced as taskset CPU affinity
-  "memory_mb":   int,   // RLIMIT_AS ceiling (MiB)
-  "pids":        int,   // RLIMIT_NPROC
-  "disk_mb":     int,   // writable-layer (/tmp tmpfs) size cap (MiB)
-  "timeout_sec": int    // wall-clock; host-side process-group kill
+  "cpu_count":        int,   // cores; enforced as taskset CPU affinity
+  "memory_mb":        int,   // RLIMIT_AS ceiling (MiB)
+  "pids":             int,   // RLIMIT_NPROC
+  "disk_mb":          int,   // writable-layer (/tmp tmpfs) size cap (MiB)
+  "timeout_sec":      int,   // wall-clock; host-side process-group kill
+  "max_output_bytes": int    // per-stream host capture ceiling (bytes); host-side, above the tier seam
 }
 ```
 
@@ -107,6 +108,12 @@ Every field is optional; a missing, zero, or non-positive value means "no limit"
 per-backend enforcement mechanism (bubblewrap rlimits/tmpfs/affinity vs gVisor OCI
 `process.rlimits`/tmpfs `size=`) is ADR 003. `cpu_count` and `disk_mb` are secondary controls that
 degrade gracefully (recorded in `sandbox_status.limits.degraded`) on hosts that can't enforce them.
+`max_output_bytes` (ADR 007) is enforced **host-side, above the `tier` seam** — `Run()` captures
+each of stdout/stderr through a writer that retains at most `max_output_bytes` bytes per stream and
+**drops** the overflow without erroring the payload's pipe (so the payload's exit is unaffected).
+stdout and stderr are capped **independently** at the same ceiling; the cap is identical under
+bubblewrap and gVisor (the backend argv/OCI spec are unchanged by it). Truncation is recorded in
+`sandbox_status.limits.output_truncated` (see the result shape below).
 
 - **Versioning:** v1 contract (`the ecosystem's v1 interface contract §2`). The `run` object is the
   contract proper; `wiring` is deploy/test plumbing.
@@ -149,7 +156,9 @@ degrade gracefully (recorded in `sandbox_status.limits.degraded`) on hosts that 
     "status":           string,      // "clean" | "timeout" (timeout = killed by the wall-clock deadline)
     "limits": {                      // applied profile.limits (zeros = not requested)
       "cpu_count":   int, "memory_mb": int, "pids": int, "disk_mb": int, "timeout_sec": int,
-      "degraded":    [ string ]      // secondary caps the host could not enforce (e.g. "disk_mb")
+      "max_output_bytes": int,       // applied per-stream output ceiling (0 = no cap)
+      "degraded":         [ string ], // secondary caps the host could not enforce (e.g. "disk_mb")
+      "output_truncated": [ string ]  // streams whose output cap dropped bytes; deterministic order: [], ["stdout"], ["stdout","stderr"]
     }
   }
 }
