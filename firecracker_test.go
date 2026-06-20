@@ -238,12 +238,21 @@ func TestFirecrackerSpecNonGoalsUpdated(t *testing.T) {
 	if !strings.Contains(s, "firecrackerBackend") {
 		t.Fatal("TC-013-08: SPEC.md does not mention firecrackerBackend; spec not updated")
 	}
-	// No future-tense roadmap language.
-	for _, bad := range []string{"will be wired", "will implement", "future", "planned", "TODO"} {
-		if strings.Contains(s, bad) {
-			// Only flag if in the Tier 3 context (other sections may legitimately use "planned").
-			// Check that the match isn't near "firecracker" — a conservative check.
-			_ = bad // allow general future-tense elsewhere; the key check is the dispatch text
+	// No future-tense roadmap language in the firecracker Non-goals entry. Scope the scan to that
+	// bullet so legitimate uses elsewhere in the file aren't flagged — the spec is a present-tense
+	// snapshot, and "not yet wired" (present-tense boundary) is allowed; future promises are not.
+	const fcMarker = "**Tier 3 config-generating backend wired"
+	start := strings.Index(s, fcMarker)
+	if start < 0 {
+		t.Fatal("TC-013-08: SPEC.md firecracker Non-goals bullet not found (cannot scope future-tense check)")
+	}
+	bullet := s[start:]
+	if end := strings.Index(bullet, "\n\n"); end >= 0 {
+		bullet = bullet[:end]
+	}
+	for _, bad := range []string{"will be wired", "will implement", "will be", "planned", "TODO", "future"} {
+		if strings.Contains(bullet, bad) {
+			t.Fatalf("TC-013-08: firecracker Non-goals bullet contains future-tense language %q; the spec is a present-tense snapshot", bad)
 		}
 	}
 	// The VMM launch is noted as not yet wired (present tense, not future promise).
