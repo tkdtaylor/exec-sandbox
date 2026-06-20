@@ -36,8 +36,9 @@ dispatch point so higher tiers slot in **without changing the `run()` contract**
 |----|------|--------|
 | 009 | **Wire the fitness functions** — `fitness-<id>` + `fitness:` umbrella over the 9 block rules; author the 3 missing checks (F-001 bwrap argv, F-002 cred-leak, F-004 prefix bound); flip those `proposed → active`. | 📋 ready |
 | 010 | Terminal audit event on early proxy-start failure (resolves behaviors.md B-007 TODO). | 📋 ready |
-| 011 | Signed `sandbox_identity.attestation` (v0 uses random bytes). | ⚠️ blocked — needs ADR + vault-consumer-contract check (trust root: ephemeral ed25519 vs host-provided key) |
+| 011 | Signed `sandbox_identity.attestation` (v0 uses random bytes). | ⚠️ blocked — needs an ADR (next available number) + vault-consumer-contract check (trust root: ephemeral ed25519 vs host-provided key) |
 | 012 | Env-mode credential injection + wipe clock (v0 wires proxy-mode only). | 📋 ready — confirm vault env-mode field names |
+| 019 | Full seccomp-BPF profile — Tier-1 default-deny cBPF baseline. | 📋 filed — needs a profile-design decision (allowlist scope, per-tier baseline) |
 
 ### Planned — Tier 3 Firecracker epic (ADR-010, dependency-ordered 013 → 018)
 
@@ -52,14 +53,14 @@ dispatch point so higher tiers slot in **without changing the `run()` contract**
 
 ### Future — deferred, not yet filed (need a scoping decision/ADR before a task file)
 
-| Work | Why deferred |
-|------|--------------|
-| Full seccomp-BPF profile (default-deny syscall baseline). | Needs a profile-design decision (allowlist scope, per-tier baseline). |
-| Egress hardening: two-layer DNS-proxy + `nftables` (OpenSandbox **OSEP-0001** reference). | Evaluated as *reference design, not adopted dependency* (the internal design hub task 019); revisit is a go/no-go, not yet a task. |
-| SOCKS5 proxy (alongside the HTTP egress proxy). | Product decision — do we need it at all — before scoping. |
-| Warm-pool / snapshot reuse (ADR-009 Q2/Q3). | Snapshot/restore is built and proven leak-free, but the reuse trigger + pool sizing + eviction are undesigned. |
-| Tier 4: Hyperlight (micro-isolate). | Watching brief only — see ADR-006. |
-| Secrets refresh/rotation during a run (v0 injects once at spawn). | Lower priority; revisit after env-mode (012) lands. |
+| Work | Disposition |
+|------|-------------|
+| HTTPS via `CONNECT` (TLS-terminated end-to-end through the egress proxy). | **TRACKED GAP** — the genuine egress gap (host allowlist preserved via the bare host in the `CONNECT` line; credential injection N/A once the client TLS-terminates). Deferred; revisit when an HTTPS-origin workload needs it (ADR-011). |
+| Egress hardening: two-layer DNS-proxy + `nftables` (OpenSandbox **OSEP-0001** reference). | **DROP (ADR-011)** — no-network-by-construction dominates filter-an-existing-route and fails closed; OSEP-0001 filters a route exec-sandbox does not have. Retained as cited prior art only. |
+| SOCKS5 proxy (alongside the HTTP egress proxy). | **DROP (ADR-011)** — incompatible with credential injection (opaque TCP has nowhere to splice the secret) and imports the SOCKS5 hostname-canonicalization bypass bug class. HTTPS via `CONNECT` is the real gap, tracked separately above. |
+| Tier 4: Hyperlight (micro-isolate). | **KEEP-WATCHING (strengthened)** — promotion trigger is Hyperlight **1.0** OR `agent-framework-hyperlight` **CodeAct GA** (ADR-006, 2026-06-20 reassessment). |
+| Warm-pool / snapshot reuse (ADR-009 Q2/Q3). | **DEFER** — snapshot/restore is built and proven leak-free, but the reuse trigger + pool sizing + eviction are undesigned. |
+| Secrets refresh/rotation during a run (v0 injects once at spawn). | **DEFER** — lower priority; revisit after env-mode (012) lands. |
 
 ## Notes for the orchestrator
 

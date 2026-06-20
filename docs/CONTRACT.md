@@ -74,5 +74,6 @@ set, a **per-host HTTP-verb allowlist** (ADR 008): a method not in a host's non-
 credential injection. Absent/empty `methods` ⇒ all verbs (backward compatible). Verb matching is
 case-insensitive (canonical upper-case). The verb check only **narrows** egress — no new route, no
 `--share-net`, no second socket. The verb *decision* is policy-engine's; exec-sandbox **enforces**.
-The proxy injects credentials into allowlisted, verb-permitted requests. v0 = HTTP over the Unix
-socket; v1 adds TLS-terminating + SOCKS5.
+The proxy injects credentials into allowlisted, verb-permitted requests. The proxy speaks HTTP
+over the Unix socket; it does not TLS-terminate or tunnel arbitrary TCP. HTTPS via `CONNECT` is a
+known gap; SOCKS5 was evaluated and rejected (ADR-011).

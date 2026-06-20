@@ -65,6 +65,16 @@ brief is the correct posture: track it, do not depend on it. Reassessment is war
 a stable API and/or when the egress/filesystem capabilities graduate out of the experimental sibling
 into a supported surface.
 
+**Promotion triggers (reassess when either fires):** (1) **Hyperlight reaches 1.0 / a stable API**,
+or (2) **`agent-framework-hyperlight` CodeAct graduates from alpha to GA** — the per-call Python
+micro-VM model is the consumer that would make a Tier-4 hyperlight backend worth implementing.
+
+> **2026-06-20 reassessment — verdict: KEEP-WATCHING.** The `agent-framework-hyperlight` CodeAct
+> per-call Python micro-VM model now tracks exec-sandbox's arbitrary-code workload more closely than
+> the base `no_std` ELF/Wasm shape did, which is why CodeAct GA is added as a second trigger. But
+> the maturity gate is unmet: core is pre-1.0 (v0.15.0) and CodeAct is alpha. No change to D1's
+> watching-brief posture.
+
 ## Alternatives considered
 
 - **Adopt hyperlight as a replacement for exec-sandbox.** *Rejected.* hyperlight is an embeddable

@@ -43,10 +43,12 @@ isolation behind the OCI seam + Unix-socket egress proxy + domain allowlist + pe
 allowlist + per-run resource limits (cpu/mem/pids/disk/timeout/output) + writable `/work`,
 read-only `FileRead` mounts, env provisioning + snapshot/restore reset + vault.inject (proxy
 mode) + audit emission (ported from the tracer-bullet).
-**Deferred (v1):** Tier 3 (Firecracker / Kata) behind the OCI seam, full seccomp profile,
-env-mode injection + wipe clock, SOCKS5 proxy, sandbox_identity attestation signatures,
-**egress hardening (two-layer network filter — see below)**. See
-[docs/CONTRACT.md](docs/CONTRACT.md).
+**Filed (backlog):** Tier 3 Firecracker behind the OCI seam (tasks 013–018, ADR-010), full
+seccomp profile (task 019), env-mode injection + wipe clock (task 012), sandbox_identity
+attestation signatures (task 011). **Known egress gap:** HTTPS via `CONNECT` (host allowlist
+preserved; credential injection N/A once the client TLS-terminates) — deferred until an
+HTTPS-origin workload needs it. SOCKS5 and the two-layer network filter were **evaluated and
+rejected** (ADR-011). See [docs/CONTRACT.md](docs/CONTRACT.md).
 
 ## Adapter seam & standards
 
@@ -59,9 +61,10 @@ Tier-1 floor). For the v1 network-namespace
 egress filter, the reference is Alibaba **OpenSandbox OSEP-0001**'s two-layer default-deny
 model — Layer 1 DNS proxy (iptables `REDIRECT`), Layer 2 `nftables` filter, with graceful
 degradation to DNS-only when `CAP_NET_ADMIN` is unavailable (Apache-2.0). Evaluated as prior
-art: a **reference design, not an adopted dependency** — exec-sandbox
-stays a modular block (the OpenSandbox platform lacks pluggable policy-engine / external vault
-/ separated audit-trail). See `exec-sandbox.md` §1.
+art: a **reference design, not an adopted dependency** (rejected for
+adoption — see ADR-011) — exec-sandbox stays a modular block (the OpenSandbox platform lacks
+pluggable policy-engine / external vault / separated audit-trail). See
+`exec-sandbox.md` §1.
 
 ## License
 

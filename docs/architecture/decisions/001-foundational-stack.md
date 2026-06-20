@@ -57,6 +57,12 @@ non-allowlisted host gets `403 blocked-by-allowlist`; a host with no origin rout
 no-route`. v0 speaks HTTP over the Unix socket (single-layer); TLS-terminating + SOCKS5 and the
 two-layer network-namespace egress filter are deferred to v1 (see README).
 
+> **Superseded in part by ADR-011 (2026-06-20):** the forward-looking prediction that v1 adds a
+> TLS-terminating + SOCKS5 proxy and the two-layer network-namespace egress filter is superseded —
+> SOCKS5 and the two-layer filter are **rejected**; HTTPS via `CONNECT` is the real tracked gap.
+> The v0 decision body above (single-layer HTTP proxy, domain allowlist, origin-map forwarding)
+> stands unchanged.
+
 ### D5 — Credential injection owned by vault: `vault.inject` at spawn, proxy mode
 
 `secret_refs` carries only opaque handles. At spawn, exec-sandbox calls
