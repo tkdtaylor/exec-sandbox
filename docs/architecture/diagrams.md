@@ -1,7 +1,7 @@
 # Architecture Diagrams
 
 **Project:** exec-sandbox
-**Last updated:** 2026-06-18 (ADR-005: FileRead read-only host mounts + run.env PATH/env provisioning)
+**Last updated:** 2026-06-19 (ADR-008: per-host HTTP-verb allowlist enforcement in the egress proxy)
 
 C4-structured Mermaid diagrams covering the system at progressively detailed levels (Context → Container → Component), plus the runtime sequence flow that shows how those pieces collaborate. See [overview.md](overview.md) for prose context, [decisions/](decisions/) for the ADRs referenced here, and [`../spec/architecture.md`](../spec/architecture.md) for the structured element catalog these diagrams render.
 
@@ -111,7 +111,7 @@ sequenceDiagram
     participant Audit as audit-trail
 
     Agent->>Run: RunRequest {payload, profile, tier, secret_refs} on stdin
-    Run->>Run: parse NetConnect allowlist; mint sandbox_identity
+    Run->>Run: parse NetConnect allowlist + per-host verb sets; mint sandbox_identity
     Run->>Audit: emit spawn {actor, action:spawn, target:sandbox_id, decision:allow}
     loop for each secret_ref handle
         Run->>Vault: vault.inject(handle, sandbox_identity, mode)
@@ -128,8 +128,8 @@ sequenceDiagram
     Run->>Run: backendFor(tier) → bubblewrap | gvisor (unknown → error)
     Run->>Box: exec backend (bwrap --unshare-all, or runsc over an OCI bundle; payload.sh + /proxy.sock bind-mounted, no network; run.workdir → /work rw cwd=/work; FileRead paths → ro mounts; run.env → PATH/env)
     Box->>Proxy: outbound HTTP via /proxy.sock (only egress)
-    Proxy->>Proxy: allowlist check; inject credential
-    Proxy-->>Box: forwarded response (or 403 blocked / 502 no-route)
+    Proxy->>Proxy: host allowlist check, then per-host verb check (ADR 008); inject credential
+    Proxy-->>Box: forwarded response (or 403 blocked-by-allowlist / 403 blocked-by-method / 502 no-route)
     Box-->>Run: stdout, stderr, exit_code
     Run->>Audit: emit exit {action:exit, exit_code, duration_ms}
     Run->>Proxy: Stop() + Wipe()

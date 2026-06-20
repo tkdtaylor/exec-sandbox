@@ -20,13 +20,13 @@ exactly as today (all verbs allowed).
 
 | Req ID | Requirement | Test cases | Covered? |
 |--------|-------------|-----------|----------|
-| REQ-007-01 | The egress allowlist carries an optional per-host **verb set**; the wire shape extends `NetConnect` so each entry can name allowed methods (e.g. `{"type":"NetConnect","allowlist":["api.example.com:443"],"methods":["GET","HEAD"]}` or a per-host form — exact shape settled in ADR 008). A host with **no** verb constraint ⇒ all verbs allowed (backward compatible) | TC-007-01 (unit, parser) | ⏳ |
-| REQ-007-02 | The proxy permits a request whose method is in the host's allowed verb set, forwarding to the origin exactly as today (credential injection unchanged) | TC-007-02 (unit, handler), TC-007-05 (integration) | ⏳ |
-| REQ-007-03 | The proxy rejects a request whose method is **not** in the host's allowed verb set with HTTP `403` (same status as a blocked host), and does **not** forward to the origin (no upstream call, no credential injected) | TC-007-03 (unit, handler), TC-007-06 (integration) | ⏳ |
-| REQ-007-04 | A non-allowlisted **host** is still rejected with `403` regardless of method (host check precedes verb check); the verb mechanism never widens host access | TC-007-04 (unit, handler) | ⏳ |
-| REQ-007-05 | Verb matching is case-insensitive per RFC-correct method comparison normalization (canonical upper-case) so `get`/`GET` are treated alike; the allowed-set is compared against the request's normalized method | TC-007-07 (unit) | ⏳ |
-| REQ-007-06 | The verb allowlist **preserves the no-network + proxy-only-egress invariant**: it only *narrows* what the proxy forwards; it adds no new route, no `--share-net`, and the proxy remains the sole egress. A blocked verb produces **no** outbound connection | TC-007-06 (integration — origin observes no request) | ⏳ |
-| REQ-007-07 | Backward compatible: an allowlist entry with no `methods` (the only shape that exists today) allows every method exactly as before; existing proxy tests stay green | TC-007-08 (regression) | ⏳ |
+| REQ-007-01 | The egress allowlist carries an optional per-host **verb set**; the wire shape extends `NetConnect` so each entry can name allowed methods (e.g. `{"type":"NetConnect","allowlist":["api.example.com:443"],"methods":["GET","HEAD"]}` or a per-host form — exact shape settled in ADR 008). A host with **no** verb constraint ⇒ all verbs allowed (backward compatible) | TC-007-01 (unit, parser) | ✅ |
+| REQ-007-02 | The proxy permits a request whose method is in the host's allowed verb set, forwarding to the origin exactly as today (credential injection unchanged) | TC-007-02 (unit, handler), TC-007-05 (integration) | ✅ |
+| REQ-007-03 | The proxy rejects a request whose method is **not** in the host's allowed verb set with HTTP `403` (same status as a blocked host), and does **not** forward to the origin (no upstream call, no credential injected) | TC-007-03 (unit, handler), TC-007-06 (integration) | ✅ |
+| REQ-007-04 | A non-allowlisted **host** is still rejected with `403` regardless of method (host check precedes verb check); the verb mechanism never widens host access | TC-007-04 (unit, handler) | ✅ |
+| REQ-007-05 | Verb matching is case-insensitive per RFC-correct method comparison normalization (canonical upper-case) so `get`/`GET` are treated alike; the allowed-set is compared against the request's normalized method | TC-007-07 (unit) | ✅ |
+| REQ-007-06 | The verb allowlist **preserves the no-network + proxy-only-egress invariant**: it only *narrows* what the proxy forwards; it adds no new route, no `--share-net`, and the proxy remains the sole egress. A blocked verb produces **no** outbound connection | TC-007-06 (integration — origin observes no request) | ✅ |
+| REQ-007-07 | Backward compatible: an allowlist entry with no `methods` (the only shape that exists today) allows every method exactly as before; existing proxy tests stay green | TC-007-08 (regression) | ✅ |
 
 ## Pre-implementation checklist
 
@@ -127,10 +127,10 @@ exactly as today (all verbs allowed).
 
 ## Post-implementation verification
 
-- [ ] Unit TCs pass (TC-007-01..04, TC-007-07, TC-007-08 unit half)
-- [ ] bwrap integration TCs pass on a box with bwrap (TC-007-05, TC-007-06, TC-007-08 integ half)
-- [ ] L5/L6: a disallowed verb observed returning 403 with the origin stub recording no hit
-- [ ] No regressions in existing proxy tests (TC-007-08)
+- [x] Unit TCs pass (TC-007-01..04, TC-007-07, TC-007-08 unit half)
+- [x] bwrap integration TCs pass on a box with bwrap (TC-007-05, TC-007-06, TC-007-08 integ half)
+- [x] L5/L6: a disallowed verb observed returning 403 with the origin stub recording no hit
+- [x] No regressions in existing proxy tests (TC-007-08)
 
 ## Test framework notes
 

@@ -1,7 +1,7 @@
 # Behaviors
 
 **Project:** exec-sandbox
-**Last updated:** 2026-06-18
+**Last updated:** 2026-06-19
 
 What the system does, observably. Each behavior describes a triggering condition, the system's response, and any externally-visible side effects.
 
@@ -31,10 +31,10 @@ Behaviors are numbered `B-001`, … sequentially. Numbers are stable references 
 ### B-002: Enforce the egress allowlist and route through the proxy
 
 - **Trigger:** the sandboxed payload makes an HTTP request through `/proxy.sock`.
-- **Response:** the egress proxy strips the port from the request Host and checks it against the allowlist derived from `profile.capabilities[NetConnect].allowlist`. An allowlisted host is resolved to a real origin via the `origin_map` (`host -> {ip, port}`) and the request is forwarded; the upstream status and body are returned. The sandbox itself has no network namespace, so the proxy socket is the only way out.
-- **Side effects:** an outbound HTTP request to the real origin (with a credential header injected if one was loaded for that host — see B-003).
-- **Failure modes:** a non-allowlisted host returns `403 blocked-by-allowlist`. An allowlisted host with no `origin_map` entry returns `502 no-route`. An upstream/dial error returns `502` with the error string.
-- **References:** ADR-001 D3/D4; `proxy.go` `handle`; tests `TestSandboxReachesAllowlistedHostViaProxy`, `TestProxyBlocksNonAllowlistedHost`.
+- **Response:** the egress proxy strips the port from the request Host and checks it against the allowlist derived from `profile.capabilities[NetConnect].allowlist` (**host check, first**). If the host is allowlisted, the proxy then checks the request's HTTP method (normalized to canonical upper-case) against that host's optional verb set from `profile.capabilities[NetConnect].methods` (**verb check, second** — ADR 008): a host with no/empty verb set is unconstrained (all verbs pass); a host with a non-empty set permits only those verbs. A request that passes both checks is resolved to a real origin via the `origin_map` (`host -> {ip, port}`) and forwarded; the upstream status and body are returned. The sandbox itself has no network namespace, so the proxy socket is the only way out. The verb check only **narrows** egress — it never opens a route the host check would have denied, and a blocked verb produces **no** outbound connection and **no** credential injection.
+- **Side effects:** an outbound HTTP request to the real origin (with a credential header injected if one was loaded for that host — see B-003). A blocked host or blocked verb produces no outbound request at all.
+- **Failure modes:** a non-allowlisted host returns `403 blocked-by-allowlist`. An allowlisted host whose verb set excludes the request's method returns `403 blocked-by-method` (same status, distinct body) with no upstream connection and no credential injected. An allowlisted, verb-permitted host with no `origin_map` entry returns `502 no-route`. An upstream/dial error returns `502` with the error string.
+- **References:** ADR-001 D3/D4, ADR 008 (per-host verb allowlist; decide=policy-engine / enforce=here); `proxy.go` `handle`, `run.go` `netVerbAllowlist`; tests `TestSandboxReachesAllowlistedHostViaProxy`, `TestProxyBlocksNonAllowlistedHost`, `TestProxyForwardsAllowedVerb`, `TestProxyBlocksDisallowedVerb`, `TestProxyHostCheckPrecedesVerbCheck`, `TestSandboxDisallowedVerbBlockedOriginSeesNothing`.
 
 ### B-003: Inject vault credentials at spawn (proxy mode, secret never in sandbox)
 

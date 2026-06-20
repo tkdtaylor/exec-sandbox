@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 )
 
@@ -22,24 +23,35 @@ type Credential struct {
 // requests before forwarding to the real origin.
 type EgressProxy struct {
 	allowlist map[string]bool
-	originMap map[string][2]string // host -> {ip, port}
-	mu        sync.Mutex
-	creds     map[string]Credential // host -> credential
-	server    *http.Server
-	listener  net.Listener
-	client    *http.Client
+	// verbAllowlist holds the optional per-host HTTP-verb constraint (ADR 008). A host with an
+	// entry here may only use the methods in its (non-empty, canonical-upper-case) set; a host with
+	// NO entry is UNCONSTRAINED — every verb is allowed (the backward-compatible default). The verb
+	// check only NARROWS egress within an already-allowlisted host; it never widens host access.
+	verbAllowlist map[string]map[string]bool
+	originMap     map[string][2]string // host -> {ip, port}
+	mu            sync.Mutex
+	creds         map[string]Credential // host -> credential
+	server        *http.Server
+	listener      net.Listener
+	client        *http.Client
 }
 
-func NewEgressProxy(allowlist []string, originMap map[string][2]string) *EgressProxy {
+// NewEgressProxy builds the per-run proxy. allowlist is the set of bare hosts permitted egress;
+// verbAllowlist is the optional host -> allowed-method-set map (ADR 008) — a nil map, or a host
+// absent from it, means that host is unconstrained (all verbs allowed, today's behavior). The verb
+// sets are expected canonical upper-case (the parser normalizes them); handle() upper-cases the
+// request method before comparing.
+func NewEgressProxy(allowlist []string, verbAllowlist map[string]map[string]bool, originMap map[string][2]string) *EgressProxy {
 	al := map[string]bool{}
 	for _, h := range allowlist {
 		al[h] = true
 	}
 	return &EgressProxy{
-		allowlist: al,
-		originMap: originMap,
-		creds:     map[string]Credential{},
-		client:    &http.Client{},
+		allowlist:     al,
+		verbAllowlist: verbAllowlist,
+		originMap:     originMap,
+		creds:         map[string]Credential{},
+		client:        &http.Client{},
 	}
 }
 
@@ -82,6 +94,19 @@ func (p *EgressProxy) handle(w http.ResponseWriter, r *http.Request) {
 	if !p.allowlist[host] {
 		http.Error(w, "blocked-by-allowlist", http.StatusForbidden)
 		return
+	}
+	// Verb check (ADR 008) — AFTER the host check (an unlisted host is already blocked above
+	// regardless of method) and BEFORE any upstream request is built or sent. A host with a
+	// non-empty verb set may only use the methods in it; an absent/empty set is unconstrained.
+	// The method is normalized to canonical upper-case so matching is case-insensitive. A blocked
+	// verb returns 403 with a DISTINCT body (blocked-by-method, vs the host block's
+	// blocked-by-allowlist) and does NOT open an outbound connection or inject a credential — the
+	// check only NARROWS egress.
+	if allowed := p.verbAllowlist[host]; len(allowed) > 0 {
+		if !allowed[strings.ToUpper(r.Method)] {
+			http.Error(w, "blocked-by-method", http.StatusForbidden)
+			return
+		}
 	}
 	origin, ok := p.originMap[host]
 	if !ok {

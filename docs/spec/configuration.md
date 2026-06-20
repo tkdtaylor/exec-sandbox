@@ -1,7 +1,7 @@
 # Configuration
 
 **Project:** exec-sandbox
-**Last updated:** 2026-06-18
+**Last updated:** 2026-06-19
 
 Every knob the system exposes. exec-sandbox has **no config files and reads no application
 environment variables** — all configuration arrives inside the stdin `RunRequest`. The tunable
@@ -38,7 +38,8 @@ Execution-shaping fields under `run`:
 | Key | Type | Default | Effect |
 |-----|------|---------|--------|
 | `run.tier` | string | `""`/`bubblewrap` → Tier-1 (bwrap) | `bubblewrap \| gvisor \| firecracker`. `""`/`bubblewrap` runs bwrap, `gvisor` runs runsc; `firecracker` (or any other value) returns `{error: "tier not implemented: <tier>"}`. The value is echoed into `sandbox_status.tier` and the spawn audit context. |
-| `run.profile.capabilities[NetConnect].allowlist` | `[string]` ("host:port") | `[]` | The egress allowlist (ports stripped). Hosts not listed are `403`-blocked by the proxy. |
+| `run.profile.capabilities[NetConnect].allowlist` | `[string]` ("host:port") | `[]` | The egress allowlist (ports stripped). Hosts not listed are `403 blocked-by-allowlist` by the proxy. |
+| `run.profile.capabilities[NetConnect].methods` | `[string]` (HTTP verbs) | absent ⇒ all verbs | **Optional per-host verb constraint** (ADR 008). Applies to every host in the same entry's `allowlist`; constrains the HTTP methods permitted to those hosts (canonical upper-case, case-insensitive match). **Absent or empty `[]` ⇒ all verbs allowed** (backward compatible) — empty is *unconstrained*, not deny-all. A non-empty set denies any verb not in it with `403 blocked-by-method` and **no** outbound connection (the host check still runs first). Different verb sets per host ⇒ multiple `NetConnect` entries. The verb *decision* is policy-engine's; the proxy **enforces**. |
 | `run.profile.capabilities[FileRead].paths` | `[string]` (abs host paths) | `[]` | **Read-only host mounts** (ADR 005). Each path is bind-mounted **read-only** at the **same** path inside the sandbox; multiple `FileRead` entries union their paths. Validated before spawn (each must be absolute + exist, else a hard `{error}`). The read-**write** host dir is `run.workdir`, not `FileRead`. |
 | `run.profile.limits` | object | — | **Enforced** resource caps (ADR 003). See the per-field table below. |
 | `run.workdir` | string (host path) | `""` | **Writable working directory** (ADR 004). Non-empty → the host dir is bind-mounted **read-write** at `/work` and the payload's cwd is `/work`; validated before spawn (must be an existing directory, else a hard `{error}`). Empty → no `/work` mount (backward compatible). The one writable host surface — system dirs stay read-only, the network stays unshared. |
@@ -109,7 +110,10 @@ and (the project-specific invariant) never enter the sandbox in proxy mode. The
 Defaults are **safe and closed**: an empty `vault_socket`/`audit_socket` disables that
 integration rather than failing; an empty allowlist blocks all egress (default-deny); the
 sandbox always runs with no network regardless of any field. Nothing in the request can widen
-the sandbox's network access beyond the proxy + allowlist.
+the sandbox's network access beyond the proxy + allowlist. The optional per-host `NetConnect.methods`
+verb constraint (ADR 008) only ever **narrows** egress within an already-allowlisted host — it
+cannot widen host access (the host check runs first) and cannot open a new route; absent/empty
+`methods` leaves every verb allowed, the prior behavior.
 
 `run.workdir` defaults to `""` — **no writable host mount**. A run only ever gains a writable host
 surface when the caller explicitly names a directory, and even then it is the single `/work`
