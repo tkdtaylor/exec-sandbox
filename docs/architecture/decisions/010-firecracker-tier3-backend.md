@@ -1,7 +1,7 @@
 # ADR 010 — Firecracker (microVM) Tier-3 backend behind the tier seam
 
-**Status:** proposed
-**Date:** 2026-06-20
+**Status:** accepted — the core decision (Option A: Firecracker behind the seam, no-NIC + vsock-bridged egress, jailer-launched) is committed. Q1–Q4 remain **task-scoped open questions**, which is a normal accepted-ADR state: Q1 (kernel/rootfs sourcing) + Q3 (jailer privilege model) gate task 015 and are expected to land as an ADR-010 amendment; Q2 (mount mechanism) is resolved in task 017; Q4 (vsock shim location) is resolved in task 014. The task decomposition (013–018) carries the work; see the coverage tracker for the dependency-ordered status.
+**Date:** 2026-06-20 (accepted 2026-06-20)
 **Related:** ADR 001 D7 (tier seam: `bubblewrap | gvisor | firecracker`), ADR 002 (gVisor Tier-2
 backend — the OCI bundle/spec pattern this ADR extends), ADR 006 (hyperlight Tier-4 watching
 brief — Firecracker is sequenced *before* it), ADR 009 (snapshot/restore baseline — the VMM-level
@@ -271,8 +271,9 @@ Adopt **Option A**: implement Tier-3 as Firecracker behind `backendFor`, with no
 and the host `EgressProxy` reached over a virtio-vsock bridge with a dumb guest-side shim presenting
 `/proxy.sock`. Run the VMM under the jailer. Map `profile.limits` onto machine-config vCPU/mem/drive
 sizing; keep `timeout_sec`/`max_output_bytes` host-side above the seam. Keep the host-side snapshot
-baseline; defer native VMM snapshot. **Status stays `proposed` until a human accepts** — this ADR
-scopes the work; the task decomposition below carries it.
+baseline; defer native VMM snapshot. **Status: accepted** — the core decision is committed; Q1–Q4
+remain task-scoped open questions (a normal accepted-ADR state, see the status line). This ADR
+scopes the work; the task decomposition (tasks 013–018) carries it.
 
 ## Consequences
 
