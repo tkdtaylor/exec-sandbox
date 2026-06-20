@@ -18,17 +18,17 @@ type gvisorBackend struct{}
 // `runsc run` argv that executes it, plus a cleanup func that removes the bundle. runsc must be
 // on PATH at run time; its absence surfaces as a spawn error (exit_code 127), never a silent
 // bubblewrap fall-back.
-func (gvisorBackend) Argv(scriptPath, proxySock, workdir string, fileReads []string, env map[string]string, lim Limits) ([]string, func(), []degrade, error) {
+func (gvisorBackend) Argv(scriptPath, proxySock, workdir string, fileReads []string, env map[string]string, envCreds [][2]string, lim Limits) ([]string, func(), []degrade, []*os.File, error) {
 	bundle, err := os.MkdirTemp("", "exec-sandbox-oci-")
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	cleanup := func() { os.RemoveAll(bundle) }
 
 	rootfs := filepath.Join(bundle, "rootfs")
 	if err := os.MkdirAll(rootfs, 0o700); err != nil {
 		cleanup()
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 
 	// memory_mb/pids → OCI process.rlimits (the gVisor sentry honors these directly, so they are
@@ -37,9 +37,10 @@ func (gvisorBackend) Argv(scriptPath, proxySock, workdir string, fileReads []str
 	// Mount the caller-specified FileRead host paths READ-ONLY at the same path (ADR 005); no-op
 	// when empty so the base spec is byte-for-byte unchanged.
 	applyFileReadToOCISpec(spec, fileReads)
-	// Provision the payload's env (PATH replaces the bare default); no-op when env is empty,
-	// leaving process.env as the bare PATH=/usr/bin:/bin (ADR 005).
-	applyEnvToOCISpec(spec, env)
+	// Provision the payload's env (PATH replaces the bare default) plus any env-mode credential vars
+	// (ADR 015) into process.env. process.env is written to config.json (mode 0600) and consumed by
+	// runsc by directory, so the credential value never appears on the runsc argv (/proc/cmdline).
+	applyEnvToOCISpec(spec, env, envCreds)
 	// Mount the host working directory writable at /work and set cwd=/work (ADR 004); no-op when
 	// workdir is empty, leaving the base spec (and its backward-compatible behavior) unchanged.
 	applyWorkdirToOCISpec(spec, workdir)
@@ -47,11 +48,11 @@ func (gvisorBackend) Argv(scriptPath, proxySock, workdir string, fileReads []str
 	b, err := json.MarshalIndent(spec, "", "  ")
 	if err != nil {
 		cleanup()
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	if err := os.WriteFile(filepath.Join(bundle, "config.json"), b, 0o600); err != nil {
 		cleanup()
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 
 	// runsc consumes the bundle by directory. --network=none is belt-and-suspenders with the
@@ -78,7 +79,9 @@ func (gvisorBackend) Argv(scriptPath, proxySock, workdir string, fileReads []str
 	} else if prefix != nil {
 		argv = append(prefix, argv...)
 	}
-	return argv, cleanup, degrades, nil
+	// gVisor delivers env entirely via the OCI process.env file, so it needs no extra FDs (unlike the
+	// bwrap --args pipe).
+	return argv, cleanup, degrades, nil, nil
 }
 
 // applyWorkdirToOCISpec mounts the host working directory writable at /work and sets the payload's
@@ -120,17 +123,26 @@ func applyFileReadToOCISpec(spec map[string]any, paths []string) {
 	spec["mounts"] = mounts
 }
 
-// applyEnvToOCISpec sets process.env from the provisioned env (ADR 005), in place: PATH replaces the
-// bare default and any other entry is exported. It is a no-op when env is empty, leaving the base
-// process.env as ["PATH=/usr/bin:/bin"] — byte-for-byte the prior behavior. The order is
-// deterministic (PATH first, then sorted keys) so the generated config.json is reproducible.
-func applyEnvToOCISpec(spec map[string]any, env map[string]string) {
-	if len(env) == 0 {
+// applyEnvToOCISpec sets process.env from the provisioned env (ADR 005) plus any env-mode credential
+// vars (ADR 015), in place: PATH replaces the bare default, every other env entry is exported, and
+// each env-mode {var_name, value} pair is appended. It is a no-op when both env and envCreds are
+// empty, leaving the base process.env as ["PATH=/usr/bin:/bin"] — byte-for-byte the prior behavior.
+// The order is deterministic (PATH first, then sorted env keys, then sorted credential vars) so the
+// generated config.json is reproducible. process.env is written to config.json (mode 0600) and never
+// to the runsc argv, so an env-mode credential value never lands in /proc/<pid>/cmdline.
+func applyEnvToOCISpec(spec map[string]any, env map[string]string, envCreds [][2]string) {
+	if len(env) == 0 && len(envCreds) == 0 {
 		return
 	}
-	if proc, ok := spec["process"].(map[string]any); ok {
-		proc["env"] = envList(env)
+	proc, ok := spec["process"].(map[string]any)
+	if !ok {
+		return
 	}
+	out := envList(env) // PATH first, then sorted env keys (bare ["PATH=/usr/bin:/bin"] when env empty)
+	for _, kv := range envCreds {
+		out = append(out, kv[0]+"="+kv[1])
+	}
+	proc["env"] = out
 }
 
 // applyLimitsToOCISpec adds the resource caps to an OCI spec in place: RLIMIT_AS (memory_mb) and

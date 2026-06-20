@@ -63,7 +63,7 @@ func assertGvisorNoSharedNetNS(spec map[string]any) error {
 func TestFitnessNoShareNetPositive(t *testing.T) {
 	// bwrap side
 	argv := bwrapArgv("/tmp/payload.sh", "/tmp/proxy.sock", "", nil, nil, 0,
-		[]string{"/usr/bin/sh", "/payload.sh"})
+		[]string{"/usr/bin/sh", "/payload.sh"}, -1)
 	joined := strings.Join(argv, " ")
 	if err := assertNoShareNet(joined); err != nil {
 		t.Fatal(err)
@@ -135,7 +135,7 @@ func TestFitnessCredNotInSandboxPositive(t *testing.T) {
 
 	// Build the argv surface (bwrap side, no env, no credential in the spawn arg list).
 	argv := bwrapArgv("/tmp/payload.sh", "/tmp/proxy.sock", "", nil, nil, 0,
-		[]string{"/usr/bin/sh", "/payload.sh"})
+		[]string{"/usr/bin/sh", "/payload.sh"}, -1)
 	argvJoined := strings.Join(argv, " ")
 
 	// The proxy holds the credential but nothing in the argv/env path sees it.

@@ -31,7 +31,7 @@ wired into the surrounding ecosystem. They are part of the stdin `RunRequest`
 | `wiring.audit_socket` | string (path) | `""` | no | Unix socket for audit `emit`. Empty → emission is a no-op. |
 | `wiring.origin_map` | object `{host: [ip, port]}` | `{}` | no | Resolves allowlisted hosts to real origins. A host without a route returns `502 no-route`. |
 | `wiring.request_id` | string | `""` | no | Correlation id echoed into every audit event's context. |
-| `wiring.injection_mode` | string | `""` | no | Passed verbatim to `vault.inject` as `mode`. `"proxy"` keeps the secret out of the sandbox (loaded onto the proxy); `"env"` is recorded but not loaded onto the proxy in v0. |
+| `wiring.injection_mode` | string | `""` | no | Passed verbatim to `vault.inject` as `mode`. `"proxy"` keeps the secret out of the sandbox entirely (loaded onto the host-side proxy, injected into outbound requests). `"env"` delivers the secret into the sandbox process environment under the vault-specified `var_name`, off the spawn argv, and wipes the host-side copy post-spawn (ADR 015). |
 
 Execution-shaping fields under `run`:
 

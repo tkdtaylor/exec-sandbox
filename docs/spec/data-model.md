@@ -177,9 +177,11 @@ On an early failure (proxy could not start) the result is instead `{ "error": st
 
 - **Producer / consumer:** `vaultInject` (`run.go`) ⇄ vault.
 - **Request:** `{ "op": "inject", "handle": string, "sandbox_identity": {sandbox_id, nonce, ts, attestation_pubkey, attestation}, "mode": string }` — see `sandbox_identity` below for the signed-attestation shape.
-- **Response (proxy mode):** `{ "delivery": "proxy", "credential": string, "binding": { "host": string, "header": string, "scheme": string } }` — `header` defaults to `Authorization`, `scheme` to `Bearer` if absent.
-- **Response (env mode):** `{ "delivery": "env", … }` (recorded but not loaded onto the proxy).
-- **Error:** a non-nil `error` field, or a transport error, triggers an `inject_failed` audit event and the handle is skipped.
+- **Response (proxy mode):** `{ "delivery": "proxy", "credential": string, "binding": { "host": string, "header": string, "scheme": string } }` — `header` defaults to `Authorization`, `scheme` to `Bearer` if absent. The `credential` value is loaded onto the host-side proxy and **never** enters the sandbox (env/args/stdout) — the F-002 data-invariant.
+- **Response (env mode):** `{ "delivery": "env", "credential": string, "var_name": string, "wiped_at": string }` — `credential` is the secret value, `var_name` the target env-var name inside the sandbox, `wiped_at` vault's own wipe-clock timestamp (vault-side bookkeeping; exec-sandbox does not persist it). The `credential` value is **delivered** into the sandbox process environment under `var_name` (ADR 015) — the deliberate, documented exception to the proxy-mode invariant — reaching the sandbox **off the spawn argv** (bwrap `--args FD` / gVisor OCI `process.env`) so it never lands in `/proc/<pid>/cmdline`. The host-side copy is held in one place (`EnvCredentials`) and wiped post-spawn and at teardown; no host copy survives the run. A response missing `var_name` is treated as an inject failure (no var delivered). The value never appears in the returned `result`, `sandbox_status`, or any audit event.
+- **Error:** a non-nil `error` field, a transport error, or (env mode) a missing `var_name` triggers an `inject_failed` audit event and the handle is skipped.
+
+**Credential data-invariant.** A proxy-mode credential value exists only on the host-side proxy at the injection edge; it appears in no sandbox-visible surface (F-002). The **sole** exception is an env-mode credential, which is delivered into the sandbox environment under its `var_name` by design and wiped from the host per the wipe clock — env mode is the only path by which a credential value deliberately enters the sandbox, and even then only as an in-sandbox env var (never on the argv, in the result, in `sandbox_status`, or in an audit event).
 
 ### Format: audit event (Unix-socket JSON-line)
 

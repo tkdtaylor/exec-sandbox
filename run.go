@@ -40,6 +40,12 @@ type RunRequest struct {
 	} `json:"wiring"`
 }
 
+// spawnArgvFn is a test seam: when non-nil, Run() calls it with the exact spawn argv just before
+// exec, so a test can assert an env-mode credential value never appears on it (the /proc/<pid>/cmdline
+// leak surface — TC-012-03). It is nil in production. Override must be restored via t.Cleanup; not
+// goroutine-safe, so tests that set it must not run in parallel.
+var spawnArgvFn func([]string)
+
 // Run executes the payload in a bubblewrap sandbox with no network, routing egress through
 // the credential-injecting proxy. exec-sandbox owns the network boundary; vault plugs
 // credential injection in via vault.inject (pull-triggered push).
@@ -91,6 +97,12 @@ func Run(req RunRequest) map[string]any {
 	proxySock := baseline.proxySock
 	secretsInjected := []map[string]any{}
 
+	// env-mode credential holder (ADR 015): the single host-side place an env-mode credential value
+	// lives. Wiped post-spawn and again at teardown so no host copy survives the run. Distinct from
+	// proxy-mode creds (which never enter the sandbox at all — F-002).
+	envCreds := NewEnvCredentials()
+	defer envCreds.Wipe()
+
 	// pull-triggered push: present {handle, sandbox_identity} to vault.inject at spawn.
 	for _, handle := range req.Run.SecretRefs {
 		resp, err := vaultInject(req.Wiring.VaultSocket, handle, sandboxIdentity, req.Wiring.InjectionMode)
@@ -112,6 +124,20 @@ func Run(req RunRequest) map[string]any {
 			secretsInjected = append(secretsInjected,
 				map[string]any{"handle_prefix": prefix(handle, 8), "delivery": "proxy"})
 		} else {
+			// env-mode (ADR 015): deliberately deliver the credential value into the sandbox env under
+			// the vault-specified var_name. The value is held ONLY in envCreds (the single wipe point);
+			// it reaches the sandbox off the argv (bwrap --args FD / OCI process.env) and is wiped
+			// post-spawn. A response missing var_name/credential is a malformed env delivery: skip it as
+			// an inject failure rather than deliver an empty/unnamed var.
+			varName := str(resp["var_name"])
+			if varName == "" {
+				emit(req.Wiring.AuditSocket, map[string]any{
+					"actor": "exec-sandbox", "action": "inject_failed", "target": sandboxID,
+					"decision": "deny", "context": map[string]any{"request_id": req.Wiring.RequestID},
+				})
+				continue
+			}
+			envCreds.Set(varName, str(resp["credential"]))
 			secretsInjected = append(secretsInjected,
 				map[string]any{"handle_prefix": prefix(handle, 8), "delivery": "env"})
 		}
@@ -145,10 +171,17 @@ func Run(req RunRequest) map[string]any {
 	if err != nil {
 		return map[string]any{"error": err.Error()}
 	}
-	argv, cleanup, degrades, err := backend.Argv(scriptPath, proxySock, workdir, fileReads, req.Run.Env, lim)
+	argv, cleanup, degrades, extraFiles, err := backend.Argv(scriptPath, proxySock, workdir, fileReads, req.Run.Env, envCreds.pairs(), lim)
 	if cleanup != nil {
 		defer cleanup()
 	}
+	// The env-mode --args pipe read end (if any) is closed once cmd has consumed it; close on every
+	// exit path so the FD does not leak.
+	defer func() {
+		for _, f := range extraFiles {
+			_ = f.Close()
+		}
+	}()
 	if err != nil {
 		return map[string]any{"error": err.Error()}
 	}
@@ -177,9 +210,18 @@ func Run(req RunRequest) map[string]any {
 	// unchanged by it. stdout and stderr are capped independently at the same ceiling.
 	stdout := newCapWriter(lim.MaxOutputBytes)
 	stderr := newCapWriter(lim.MaxOutputBytes)
+	// Test seam: capture the EXACT spawn argv so a test can assert an env-mode credential value never
+	// lands on it (TC-012-03 — /proc/<pid>/cmdline absence). nil in production (no overhead).
+	if spawnArgvFn != nil {
+		spawnArgvFn(argv)
+	}
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
+	// env-mode delivery (ADR 015): the backend's extraFiles (the bwrap --args pipe read end) become
+	// the child's fd 3.. — the env-mode credential value travels through this pipe, never on the argv,
+	// so it cannot leak via /proc/<pid>/cmdline.
+	cmd.ExtraFiles = extraFiles
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error {
 		if cmd.Process != nil {
@@ -190,11 +232,16 @@ func Run(req RunRequest) map[string]any {
 	cmd.WaitDelay = 5 * time.Second
 	exitCode := 0
 	status := "clean"
-	if err := cmd.Run(); err != nil {
-		if ee, ok := err.(*exec.ExitError); ok {
+	runErr := cmd.Run()
+	// Wipe clock (ADR 015): the child has been spawned with the env-mode credential (or failed to);
+	// the host retains no copy past spawn. Wiping here — not only at the deferred teardown — closes
+	// the window as early as possible, mirroring the proxy Wipe() discipline.
+	envCreds.Wipe()
+	if runErr != nil {
+		if ee, ok := runErr.(*exec.ExitError); ok {
 			exitCode = ee.ExitCode()
 		} else {
-			stderr.Write([]byte(err.Error()))
+			stderr.Write([]byte(runErr.Error()))
 			exitCode = 127
 		}
 	}
@@ -266,8 +313,13 @@ func limitsReport(lim Limits, degraded, outputTruncated []string) map[string]any
 // fileReads are validated absolute host paths bind-mounted READ-ONLY at the same path inside the
 // sandbox (ADR 005); env is exported into the sandbox (PATH replaces the bare default). Both are
 // empty/nil when absent, leaving prior behavior unchanged.
+// envCreds are the env-mode credential {var_name, value} pairs from vault.inject (ADR 015): they are
+// delivered into the sandbox environment OFF the spawn argv (bwrap via --args FD; gVisor via the OCI
+// process.env file) so the value never lands in /proc/<pid>/cmdline. nil/empty when no env-mode
+// handle was injected. extraFiles are passed up to cmd.ExtraFiles (the bwrap --args pipe read end);
+// nil when the backend needs none.
 type Backend interface {
-	Argv(scriptPath, proxySock, workdir string, fileReads []string, env map[string]string, lim Limits) (argv []string, cleanup func(), degrades []degrade, err error)
+	Argv(scriptPath, proxySock, workdir string, fileReads []string, env map[string]string, envCreds [][2]string, lim Limits) (argv []string, cleanup func(), degrades []degrade, extraFiles []*os.File, err error)
 }
 
 // backendFor selects the isolation backend for a tier. "" and "bubblewrap" select Tier-1
@@ -287,7 +339,7 @@ func backendFor(tier string) (Backend, error) {
 // bubblewrapBackend is the Tier-1 isolation substrate.
 type bubblewrapBackend struct{}
 
-func (bubblewrapBackend) Argv(scriptPath, proxySock, workdir string, fileReads []string, env map[string]string, lim Limits) ([]string, func(), []degrade, error) {
+func (bubblewrapBackend) Argv(scriptPath, proxySock, workdir string, fileReads []string, env map[string]string, envCreds [][2]string, lim Limits) ([]string, func(), []degrade, []*os.File, error) {
 	var degrades []degrade
 
 	// disk_mb → tmpfs --size on /tmp (the only writable layer). Reliably size-cappable on tmpfs;
@@ -305,10 +357,25 @@ func (bubblewrapBackend) Argv(scriptPath, proxySock, workdir string, fileReads [
 	// memory_mb/pids → in-sandbox prlimit (per-sandbox via the bwrap user namespace).
 	inner, err := prlimitWrap(lim, []string{"/usr/bin/sh", "/payload.sh"})
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 
-	argv := bwrapArgv(scriptPath, proxySock, workdir, fileReads, env, diskBytes, inner)
+	// env-mode credentials (ADR 015): when present, the --clearenv + ALL --setenv directives move into
+	// a pipe consumed via bwrap --args FD, so the credential VALUE never lands on the literal spawn
+	// argv (/proc/<pid>/cmdline). The pipe read end is returned as an extraFile → child fd 3. When no
+	// env-mode credential was injected, env stays inline on the argv exactly as before (no pipe).
+	var extraFiles []*os.File
+	envCredsFD := -1
+	if len(envCreds) > 0 {
+		pr, err := bwrapEnvArgsPipe(env, envCreds)
+		if err != nil {
+			return nil, nil, nil, nil, err
+		}
+		extraFiles = []*os.File{pr}
+		envCredsFD = 3 // ExtraFiles[0] is fd 3 in the child
+	}
+
+	argv := bwrapArgv(scriptPath, proxySock, workdir, fileReads, env, diskBytes, inner, envCredsFD)
 
 	// cpu_count → taskset affinity prefix on the whole argv (inherited into the sandbox).
 	if prefix, d := cpuAffinityPrefix(lim.CPUCount); d != nil {
@@ -316,7 +383,32 @@ func (bubblewrapBackend) Argv(scriptPath, proxySock, workdir string, fileReads [
 	} else if prefix != nil {
 		argv = append(prefix, argv...)
 	}
-	return argv, nil, degrades, nil
+	return argv, nil, degrades, extraFiles, nil
+}
+
+// bwrapEnvArgsPipe builds the read end of a pipe carrying the NUL-separated bwrap args that set up the
+// sandbox environment OFF the literal argv (ADR 015): --clearenv, the regular env --setenv pairs, and
+// the env-mode credential --setenv pairs. bwrap consumes these via --args FD, so neither the env-mode
+// credential value nor any other env value appears in /proc/<pid>/cmdline. A goroutine writes the
+// payload and closes the write end; the returned read end is the caller's to close after spawn.
+func bwrapEnvArgsPipe(env map[string]string, envCreds [][2]string) (*os.File, error) {
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		return nil, err
+	}
+	args := []string{"--clearenv"}
+	for _, kv := range envSetenvPairs(env) {
+		args = append(args, "--setenv", kv[0], kv[1])
+	}
+	for _, kv := range envCreds {
+		args = append(args, "--setenv", kv[0], kv[1])
+	}
+	payload := strings.Join(args, "\x00") + "\x00"
+	go func() {
+		_, _ = pw.WriteString(payload)
+		_ = pw.Close()
+	}()
+	return pr, nil
 }
 
 // bwrapArgv builds the Tier-1 sandbox: --unshare-all removes the network namespace entirely; the
@@ -328,7 +420,11 @@ func (bubblewrapBackend) Argv(scriptPath, proxySock, workdir string, fileReads [
 // (--ro-bind, NOT --bind) at the same path; env is exported via --setenv (PATH replaces the bare
 // default) — adding read-only host paths and PATH entries opens no egress and no writable surface
 // (ADR 005).
-func bwrapArgv(scriptPath, proxySock, workdir string, fileReads []string, env map[string]string, diskBytes int, finalCmd []string) []string {
+// envCredsFD: when >= 0, an env-mode credential is being delivered (ADR 015) and the --clearenv + ALL
+// --setenv directives (regular env AND credential) are read by bwrap from that file descriptor via
+// --args, keeping every env VALUE off the literal argv (/proc/<pid>/cmdline). When < 0 (the common
+// case — no env-mode handle) the env is set inline via --clearenv + --setenv exactly as before.
+func bwrapArgv(scriptPath, proxySock, workdir string, fileReads []string, env map[string]string, diskBytes int, finalCmd []string, envCredsFD int) []string {
 	argv := []string{"bwrap",
 		"--ro-bind", "/usr", "/usr",
 		"--ro-bind", "/etc", "/etc",
@@ -342,11 +438,18 @@ func bwrapArgv(scriptPath, proxySock, workdir string, fileReads []string, env ma
 	argv = append(argv,
 		"--ro-bind", scriptPath, "/payload.sh",
 		"--bind", proxySock, "/proxy.sock",
-		"--unshare-all", "--die-with-parent", "--clearenv")
-	// Env: PATH replaces the bare default; any other entry is exported verbatim. Emitted in a
-	// deterministic (sorted-key) order so the argv is reproducible. Empty env ⇒ bare PATH unchanged.
-	for _, kv := range envSetenvPairs(env) {
-		argv = append(argv, "--setenv", kv[0], kv[1])
+		"--unshare-all", "--die-with-parent")
+	if envCredsFD >= 0 {
+		// Off-argv env (ADR 015): --clearenv + every --setenv (env + credential) come from the FD, so
+		// no env value — least of all the credential — appears in /proc/<pid>/cmdline.
+		argv = append(argv, "--args", strconv.Itoa(envCredsFD))
+	} else {
+		// Inline env (the common, no-credential path), byte-for-byte the prior behavior: --clearenv then
+		// PATH (replaces the bare default) and any other entry, in deterministic sorted-key order.
+		argv = append(argv, "--clearenv")
+		for _, kv := range envSetenvPairs(env) {
+			argv = append(argv, "--setenv", kv[0], kv[1])
+		}
 	}
 	for _, d := range []string{"/bin", "/lib", "/lib64", "/sbin"} {
 		if _, err := os.Stat(d); err == nil {
