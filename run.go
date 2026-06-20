@@ -3,7 +3,6 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -144,10 +143,16 @@ func Run(req RunRequest) map[string]any {
 	defer cancel()
 
 	start := time.Now()
-	var stdout, stderr bytes.Buffer
+	// Host-side output cap (ADR 007): each stream is captured through a capWriter that retains at
+	// most lim.MaxOutputBytes bytes and drops the overflow, without erroring the child's pipe.
+	// lim.MaxOutputBytes <= 0 ⇒ unbounded (prior behavior). This sits ABOVE the tier seam — the
+	// same cap applies identically under bubblewrap and gVisor; the backend argv/OCI spec are
+	// unchanged by it. stdout and stderr are capped independently at the same ceiling.
+	stdout := newCapWriter(lim.MaxOutputBytes)
+	stderr := newCapWriter(lim.MaxOutputBytes)
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error {
 		if cmd.Process != nil {
@@ -162,7 +167,7 @@ func Run(req RunRequest) map[string]any {
 		if ee, ok := err.(*exec.ExitError); ok {
 			exitCode = ee.ExitCode()
 		} else {
-			stderr.WriteString(err.Error())
+			stderr.Write([]byte(err.Error()))
 			exitCode = 127
 		}
 	}
@@ -184,22 +189,40 @@ func Run(req RunRequest) map[string]any {
 		"sandbox_status": map[string]any{
 			"sandbox_id": sandboxID, "tier": req.Run.Tier, "duration_ms": durationMs,
 			"secrets_injected": secretsInjected, "status": status,
-			"limits": limitsReport(lim, degraded),
+			"limits": limitsReport(lim, degraded, outputTruncated(stdout, stderr)),
 		},
 	}
 }
 
-// limitsReport is the additive sandbox_status.limits record: the caps that were requested plus the
-// list of any that degraded (could not be enforced on this host). It lets a consumer and the audit
-// trail see exactly which caps were applied (ADR 003). Zero values mean "no limit requested".
-func limitsReport(lim Limits, degraded []string) map[string]any {
+// outputTruncated builds the deterministic-order list of streams whose host-side output cap dropped
+// bytes (ADR 007): [] when neither overflowed, ["stdout"] for stdout only, ["stdout","stderr"] when
+// both — stdout always first. Mirrors the degraded array's deterministic ordering in limitsReport.
+func outputTruncated(stdout, stderr *capWriter) []string {
+	truncated := []string{}
+	if stdout.overflowed {
+		truncated = append(truncated, "stdout")
+	}
+	if stderr.overflowed {
+		truncated = append(truncated, "stderr")
+	}
+	return truncated
+}
+
+// limitsReport is the additive sandbox_status.limits record: the caps that were requested, the list
+// of any that degraded (could not be enforced on this host), and the list of streams whose output
+// cap dropped bytes. It lets a consumer and the audit trail see exactly which caps were applied
+// (ADR 003) and whether captured output was truncated (ADR 007). Zero values mean "no limit
+// requested"; an empty output_truncated means no stream was capped.
+func limitsReport(lim Limits, degraded, outputTruncated []string) map[string]any {
 	return map[string]any{
-		"cpu_count":   lim.CPUCount,
-		"memory_mb":   lim.MemoryMB,
-		"pids":        lim.PidsLimit,
-		"disk_mb":     lim.DiskMB,
-		"timeout_sec": int(lim.Timeout / time.Second),
-		"degraded":    degraded,
+		"cpu_count":        lim.CPUCount,
+		"memory_mb":        lim.MemoryMB,
+		"pids":             lim.PidsLimit,
+		"disk_mb":          lim.DiskMB,
+		"timeout_sec":      int(lim.Timeout / time.Second),
+		"max_output_bytes": lim.MaxOutputBytes,
+		"degraded":         degraded,
+		"output_truncated": outputTruncated,
 	}
 }
 

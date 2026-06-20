@@ -54,6 +54,7 @@ Execution-shaping fields under `run`:
 | `pids` | int | `RLIMIT_NPROC` — bwrap: in-sandbox `prlimit --nproc` (per-sandbox via the userns); gVisor: OCI `process.rlimits` | A fork bomb hits the cap ("Cannot fork"). |
 | `disk_mb` | int (MiB) | `/tmp` tmpfs size — bwrap: `--size`; gVisor: tmpfs `size=` option | Writes past the cap return ENOSPC. **Secondary control:** degrades (warn + continue) when the writable layer can't be size-capped (`diskQuotaSupported`). |
 | `timeout_sec` | int (s) | host-side `context.WithTimeout` + process-group `SIGKILL` (backend-agnostic) | The payload (and its whole process group) is killed at the deadline; `sandbox_status.status` becomes `"timeout"`, `exit_code` `137`. |
+| `max_output_bytes` | int (bytes) | host-side capture cap in `Run()` — a capping writer per stream, **above** the `tier` seam (backend-agnostic) | Captured stdout/stderr are each retained up to the ceiling; overflow is **dropped** without erroring the payload (its exit is unchanged). stdout/stderr capped **independently** at the same ceiling; identical under bubblewrap and gVisor (the backend argv/OCI spec are unchanged). The capped streams are listed in `sandbox_status.limits.output_truncated`. A host memory guard against a payload that floods stdout, distinct from the in-sandbox `memory_mb` rlimit. |
 
 ---
 
@@ -122,7 +123,10 @@ network stays unshared regardless. A malformed `FileRead` path (relative or none
 run loudly before any side effect rather than silently running without the mount.
 
 `profile.limits` defaults to "no limit" per field — an unset cap is simply not applied (limits
-*narrow* the sandbox; they never widen it). The `cpu_count` and `disk_mb` caps are **secondary**
+*narrow* the sandbox; they never widen it). `max_output_bytes` defaults to "no cap": an unset or
+non-positive value captures full output unbounded (byte-for-byte the prior behavior), and the cap,
+when set, only *drops* output past the ceiling — it never relaxes any other control. The `cpu_count`
+and `disk_mb` caps are **secondary**
 anti-DoS controls and degrade gracefully (a stderr `WARNING` + a `sandbox_status.limits.degraded`
 entry, never a hard failure) on hosts that can't enforce them — a documented, ADR-003-justified
 exception (mirroring agent-builder ADR 027), not a weakening of the load-bearing controls
