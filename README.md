@@ -74,7 +74,7 @@ Need hardened deployments, integration help, or a support SLA? **Commercial supp
 exec-sandbox is independent, open-source security tooling. If it saves you time or risk, consider sponsoring continued development:
 
 - 💜 [GitHub Sponsors](https://github.com/sponsors/tkdtaylor)
-<!-- - 🤝 [Open Collective](https://opencollective.com/exec-sandbox)  (uncomment once the collective exists) -->
+- 🤝 [Open Collective](https://opencollective.com/tkdtaylor)
 
 ## Contributing
 
