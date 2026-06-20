@@ -70,11 +70,18 @@ func Run(req RunRequest) map[string]any {
 		"context": map[string]any{"tier": req.Run.Tier, "request_id": req.Wiring.RequestID},
 	})
 
-	work, _ := os.MkdirTemp("", "exec-sandbox-")
-	defer os.RemoveAll(work)
-	proxySock := filepath.Join(work, "proxy.sock")
-
+	// Build the pristine per-run baseline (ADR 009): a fresh work dir with payload.sh seeded into
+	// it, the fresh per-run proxy socket path, and a fresh proxy with an empty credential map. This
+	// is the snapshot — the named baseline a leak-proof reset is asserted against. The default
+	// one-shot path is snapshot → run → teardown, observationally identical to today's inlined
+	// MkdirTemp → write payload.sh → NewEgressProxy → … → RemoveAll + Wipe.
 	proxy := NewEgressProxy(allowlist, verbAllowlist, req.Wiring.OriginMap)
+	baseline, err := snapshotBaseline(req.Run.Payload, proxy)
+	if err != nil {
+		return map[string]any{"error": "baseline prepare failed: " + err.Error()}
+	}
+	defer baseline.teardown() // one-shot terminal cleanup: RemoveAll(work) + proxy.Wipe()
+	proxySock := baseline.proxySock
 	secretsInjected := []map[string]any{}
 
 	// pull-triggered push: present {handle, sandbox_identity} to vault.inject at spawn.
@@ -108,8 +115,9 @@ func Run(req RunRequest) map[string]any {
 	}
 	defer func() { proxy.Stop(); proxy.Wipe() }()
 
-	scriptPath := filepath.Join(work, "payload.sh")
-	os.WriteFile(scriptPath, []byte(req.Run.Payload), 0o600)
+	// payload.sh was seeded into the writable surface by snapshotBaseline (mode 0600); the baseline
+	// owns the pristine file set so restore can re-seed exactly it.
+	scriptPath := baseline.scriptPath()
 
 	// Tier seam: select the isolation backend by req.run.tier. "" and "bubblewrap" both select
 	// Tier-1 (bwrap, unchanged); "gvisor" selects the runsc Tier-2 backend; any other tier is a
