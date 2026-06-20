@@ -1,7 +1,7 @@
 # Data Model
 
 **Project:** exec-sandbox
-**Last updated:** 2026-06-19
+**Last updated:** 2026-06-20
 
 What data exists, how it's structured, where it lives. exec-sandbox holds **no persistent
 state** — every run is ephemeral. The data model is therefore mostly wire/interchange formats
