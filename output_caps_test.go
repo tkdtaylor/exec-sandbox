@@ -203,8 +203,8 @@ func TestOutputCapTruncates_Bwrap(t *testing.T) {
 // so the bwrap argv is byte-for-byte the same with and without the cap (no new flag, no new mount),
 // still --unshare-all with no --share-net and the proxy socket the only egress bind.
 func TestOutputCapDoesNotTouchBwrapArgv(t *testing.T) {
-	withCap := bwrapArgv("/w/payload.sh", "/w/proxy.sock", "", nil, nil, 0, []string{"/usr/bin/sh", "/payload.sh"})
-	withoutCap := bwrapArgv("/w/payload.sh", "/w/proxy.sock", "", nil, nil, 0, []string{"/usr/bin/sh", "/payload.sh"})
+	withCap := bwrapArgv("/w/payload.sh", "/w/proxy.sock", "", nil, nil, 0, []string{"/usr/bin/sh", "/payload.sh"}, -1)
+	withoutCap := bwrapArgv("/w/payload.sh", "/w/proxy.sock", "", nil, nil, 0, []string{"/usr/bin/sh", "/payload.sh"}, -1)
 	// The cap never reaches bwrapArgv at all — it lives in Run()'s capture path. The argv is
 	// identical regardless of MaxOutputBytes, which is exactly the tier-independence property.
 	if !reflect.DeepEqual(withCap, withoutCap) {

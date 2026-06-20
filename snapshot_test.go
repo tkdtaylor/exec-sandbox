@@ -178,7 +178,7 @@ func TestRestoredSandboxKeepsNoNetworkInvariant(t *testing.T) {
 	}
 
 	// The argv a restored baseline builds is identical to a fresh one's: --unshare-all, no --share-net.
-	argv := bwrapArgv(b.scriptPath(), b.proxySock, "", nil, nil, 0, []string{"/usr/bin/sh", "/payload.sh"})
+	argv := bwrapArgv(b.scriptPath(), b.proxySock, "", nil, nil, 0, []string{"/usr/bin/sh", "/payload.sh"}, -1)
 	joined := strings.Join(argv, " ")
 	if !strings.Contains(joined, "--unshare-all") {
 		t.Fatalf("restored argv missing --unshare-all: %v", argv)

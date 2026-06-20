@@ -182,7 +182,7 @@ func TestNoFileReadNoEnv_Bwrap(t *testing.T) {
 		t.Fatalf("command -v mytool should resolve nothing on a bare PATH, stdout=%q", out)
 	}
 	// The constructed argv carries no FileRead --ro-bind and only the default --setenv PATH.
-	argv, _, _, err := bubblewrapBackend{}.Argv("/p/payload.sh", "/p/proxy.sock", "", nil, nil, Limits{})
+	argv, _, _, _, err := bubblewrapBackend{}.Argv("/p/payload.sh", "/p/proxy.sock", "", nil, nil, nil, Limits{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -190,7 +190,7 @@ func TestNoFileReadNoEnv_Bwrap(t *testing.T) {
 		t.Fatalf("no-env argv missing default --setenv PATH /usr/bin:/bin: %v", argv)
 	}
 	// An empty FileRead/env request is treated as absent: same argv.
-	argv2, _, _, _ := bubblewrapBackend{}.Argv("/p/payload.sh", "/p/proxy.sock", "", []string{}, map[string]string{}, Limits{})
+	argv2, _, _, _, _ := bubblewrapBackend{}.Argv("/p/payload.sh", "/p/proxy.sock", "", []string{}, map[string]string{}, nil, Limits{})
 	if !argvHasTriple(argv2, "--setenv", "PATH", "/usr/bin:/bin") {
 		t.Fatalf("empty FileRead/env argv missing default --setenv PATH: %v", argv2)
 	}
@@ -229,7 +229,7 @@ func assertFileReadError(t *testing.T, res map[string]any, label string) {
 // empty ⇒ base unchanged.
 func TestFileReadArgv_Bwrap(t *testing.T) {
 	env := map[string]string{"PATH": "/abs/tools:/usr/bin:/bin"}
-	argv, _, _, err := bubblewrapBackend{}.Argv("/p/payload.sh", "/p/proxy.sock", "", []string{"/abs/tools"}, env, Limits{})
+	argv, _, _, _, err := bubblewrapBackend{}.Argv("/p/payload.sh", "/p/proxy.sock", "", []string{"/abs/tools"}, env, nil, Limits{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -253,7 +253,7 @@ func TestFileReadArgv_Bwrap(t *testing.T) {
 	}
 
 	// Empty FileRead/env ⇒ no extra --ro-bind for a FileRead path and the default --setenv PATH.
-	base, _, _, _ := bubblewrapBackend{}.Argv("/p/payload.sh", "/p/proxy.sock", "", nil, nil, Limits{})
+	base, _, _, _, _ := bubblewrapBackend{}.Argv("/p/payload.sh", "/p/proxy.sock", "", nil, nil, nil, Limits{})
 	if !argvHasTriple(base, "--setenv", "PATH", "/usr/bin:/bin") {
 		t.Fatalf("base argv missing default --setenv PATH /usr/bin:/bin: %v", base)
 	}
@@ -289,7 +289,7 @@ func TestFileReadOCISpec(t *testing.T) {
 	// With FileRead paths + env.
 	spec := gvisorOCISpec("/p/payload.sh", "/p/proxy.sock")
 	applyFileReadToOCISpec(spec, []string{"/abs/tools"})
-	applyEnvToOCISpec(spec, map[string]string{"PATH": "/abs/tools:/usr/bin:/bin"})
+	applyEnvToOCISpec(spec, map[string]string{"PATH": "/abs/tools:/usr/bin:/bin"}, nil)
 
 	var tools map[string]any
 	for _, m := range spec["mounts"].([]map[string]any) {
@@ -333,7 +333,7 @@ func TestFileReadOCISpec(t *testing.T) {
 	// Empty FileRead/env ⇒ base spec unchanged: no extra mount, process.env stays bare PATH.
 	base := gvisorOCISpec("/p/payload.sh", "/p/proxy.sock")
 	applyFileReadToOCISpec(base, nil)
-	applyEnvToOCISpec(base, nil)
+	applyEnvToOCISpec(base, nil, nil)
 	for _, m := range base["mounts"].([]map[string]any) {
 		if m["destination"] == "/abs/tools" {
 			t.Fatal("empty FileRead added a mount")
@@ -347,7 +347,7 @@ func TestFileReadOCISpec(t *testing.T) {
 // TC-011: no-FileRead / no-env runs produce the same base argv/spec as before this task.
 func TestFileReadRegressionBaseUnchanged(t *testing.T) {
 	// bwrap base argv with no FileRead/env matches the pre-task shape: default PATH, no FileRead mount.
-	argv, _, _, err := bubblewrapBackend{}.Argv("/p/payload.sh", "/p/proxy.sock", "", nil, nil, Limits{})
+	argv, _, _, _, err := bubblewrapBackend{}.Argv("/p/payload.sh", "/p/proxy.sock", "", nil, nil, nil, Limits{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -361,7 +361,7 @@ func TestFileReadRegressionBaseUnchanged(t *testing.T) {
 	// gVisor base spec with no FileRead/env: process.env is the bare PATH, no FileRead mount.
 	spec := gvisorOCISpec("/p/payload.sh", "/p/proxy.sock")
 	applyFileReadToOCISpec(spec, nil)
-	applyEnvToOCISpec(spec, nil)
+	applyEnvToOCISpec(spec, nil, nil)
 	e := spec["process"].(map[string]any)["env"].([]string)
 	if len(e) != 1 || e[0] != "PATH=/usr/bin:/bin" {
 		t.Fatalf("regression: base process.env = %v, want [PATH=/usr/bin:/bin]", e)
