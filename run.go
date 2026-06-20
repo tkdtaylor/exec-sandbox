@@ -45,6 +45,7 @@ type RunRequest struct {
 // credential injection in via vault.inject (pull-triggered push).
 func Run(req RunRequest) map[string]any {
 	allowlist := netAllowlist(req.Run.Profile)
+	verbAllowlist := netVerbAllowlist(req.Run.Profile)
 	lim := parseLimits(req.Run.Profile)
 
 	// Resolve the optional writable working directory before any side effect (proxy/vault): a
@@ -73,7 +74,7 @@ func Run(req RunRequest) map[string]any {
 	defer os.RemoveAll(work)
 	proxySock := filepath.Join(work, "proxy.sock")
 
-	proxy := NewEgressProxy(allowlist, req.Wiring.OriginMap)
+	proxy := NewEgressProxy(allowlist, verbAllowlist, req.Wiring.OriginMap)
 	secretsInjected := []map[string]any{}
 
 	// pull-triggered push: present {handle, sandbox_identity} to vault.inject at spawn.
@@ -419,6 +420,47 @@ func netAllowlist(profile map[string]any) []string {
 		}
 		for _, a := range toStringList(cm["allowlist"]) {
 			out = append(out, stripPort(a))
+		}
+	}
+	return out
+}
+
+// netVerbAllowlist parses the optional per-host HTTP-verb constraint carried by NetConnect
+// capabilities (ADR 008). It returns a host -> allowed-method-set map IN ADDITION to the bare-host
+// allowlist netAllowlist produces. Semantics:
+//   - A NetConnect entry's optional "methods" array applies to EVERY host in that entry's allowlist.
+//   - A host with NO methods constraint (today's only shape) is UNCONSTRAINED — it gets no entry in
+//     the map, which the proxy reads as "all verbs allowed" (backward compatible).
+//   - An explicitly EMPTY "methods": [] is ALSO unconstrained, NOT deny-all — deny is the absence of
+//     a verb from a NON-EMPTY set, never an empty set. Such a host gets no entry either.
+//   - Methods are normalized to canonical UPPER-CASE so matching is case-insensitive (ADR 008 §3).
+//   - When the same host appears across multiple NetConnect entries, their method sets UNION (the
+//     same union-across-entries rule fileReadPaths uses).
+//
+// The returned map is nil when no host carries a verb constraint (every host unconstrained).
+func netVerbAllowlist(profile map[string]any) map[string]map[string]bool {
+	var out map[string]map[string]bool
+	caps, _ := profile["capabilities"].([]any)
+	for _, c := range caps {
+		cm, _ := c.(map[string]any)
+		if cm["type"] != "NetConnect" {
+			continue
+		}
+		methods := toStringList(cm["methods"])
+		if len(methods) == 0 {
+			continue // no/empty methods ⇒ unconstrained (all verbs); no map entry
+		}
+		for _, a := range toStringList(cm["allowlist"]) {
+			host := stripPort(a)
+			if out == nil {
+				out = map[string]map[string]bool{}
+			}
+			if out[host] == nil {
+				out[host] = map[string]bool{}
+			}
+			for _, m := range methods {
+				out[host][strings.ToUpper(m)] = true
+			}
 		}
 	}
 	return out

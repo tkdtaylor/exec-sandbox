@@ -1,7 +1,7 @@
 # Data Model
 
 **Project:** exec-sandbox
-**Last updated:** 2026-06-18
+**Last updated:** 2026-06-19
 
 What data exists, how it's structured, where it lives. exec-sandbox holds **no persistent
 state** — every run is ephemeral. The data model is therefore mostly wire/interchange formats
@@ -30,11 +30,12 @@ survives the process.
 - **Concurrency rules:** all access goes through `mu`. `SetCredential`/`Wipe` are write paths; `handle` takes the lock to read the credential for a host. The HTTP server runs in its own goroutine.
 - **Bounds:** at most one credential per allowlisted host.
 
-### State: `EgressProxy.allowlist` (`map[string]bool`) and `originMap` (`map[string][2]string`)
+### State: `EgressProxy.allowlist` (`map[string]bool`), `verbAllowlist` (`map[string]map[string]bool`) and `originMap` (`map[string][2]string`)
 
-- **Shape:** `allowlist` is a set of bare hostnames (ports stripped); `originMap` maps `host -> {ip, port}`.
-- **Owner:** the per-run `EgressProxy`; both are set at construction and read-only thereafter.
+- **Shape:** `allowlist` is a set of bare hostnames (ports stripped); `verbAllowlist` maps a bare host to its allowed-method set (canonical upper-case keys) — a host **absent** from the map, or with an **empty** set, is **unconstrained** (all verbs allowed); `originMap` maps `host -> {ip, port}`.
+- **Owner:** the per-run `EgressProxy`; all three are set at construction and read-only thereafter.
 - **Lifetime:** per run.
+- **Notes:** `verbAllowlist` carries the per-host HTTP-verb constraint (ADR 008). It is the *enforcement* state for a verb **decision** made by policy-engine; exec-sandbox only enforces. The verb check in `handle` runs **after** the host check and only ever **narrows** egress (a non-allowlisted verb is blocked with `403 blocked-by-method`, no outbound connection).
 
 ---
 
@@ -67,8 +68,14 @@ survives the process.
 ```
 
 `profile.capabilities` is an array of capability objects. exec-sandbox reads two entry types:
-- `{ "type": "NetConnect", "allowlist": [ "host:port", … ] }` — the port is stripped to derive the
-  egress allowlist.
+- `{ "type": "NetConnect", "allowlist": [ "host:port", … ], "methods": [ "GET", … ] }` — the port is
+  stripped to derive the egress allowlist. The optional `methods` array (ADR 008) constrains the
+  HTTP verbs permitted to **every** host in that entry's `allowlist`; it is parsed into a
+  `host → allowed-method-set` map (canonical upper-case). **No `methods` / an empty `methods: []` ⇒
+  unconstrained** (all verbs allowed — backward compatible); a non-empty set denies any verb not in
+  it. Per-host verb sets are expressed by emitting multiple `NetConnect` entries. The *decision* of
+  which verbs to allow is policy-engine's; exec-sandbox carries the shape and **enforces** it at the
+  proxy.
 - `{ "type": "FileRead", "paths": [ "/abs/host/path", … ] }` — **implemented** (ADR 005): each path
   is bind-mounted **read-only** at the **same** path inside the sandbox. Multiple `FileRead` entries
   **union** their path lists (`fileReadPaths`). Each path is validated before spawn — it must be
@@ -196,6 +203,7 @@ adds signatures per the README.)
 | Derived | Source | Recompute trigger | Staleness tolerance |
 |---------|--------|-------------------|---------------------|
 | Egress allowlist | `profile.capabilities[NetConnect].allowlist` (ports stripped) | Once at start of each run (`netAllowlist`) | N/A — recomputed every run |
+| Per-host verb allowlist | `profile.capabilities[NetConnect].methods` (canonical upper-case; absent/empty ⇒ unconstrained) | Once at start of each run (`netVerbAllowlist`) | N/A — recomputed every run |
 
 ---
 
