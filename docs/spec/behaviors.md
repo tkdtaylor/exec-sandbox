@@ -122,9 +122,9 @@ Behaviors are numbered `B-001`, … sequentially. Numbers are stable references 
 
 - **Trigger:** the egress proxy fails to bind its Unix socket.
 - **Response:** `Run` returns `{error: "proxy start failed: <err>"}` and does not run the payload.
-- **Side effects:** the spawn audit event and any credential injection have already happened; no exit event is emitted on this path.
-- **Failure modes:** this is the failure path. (TODO: confirm whether an `exit`/teardown audit event should also fire on early proxy-start failure — currently it does not; see `run.go` `Run`.)
-- **References:** `run.go` `Run`; `proxy.go` `Start`.
+- **Side effects:** the `spawn` audit event and any credential injection have already happened. A terminal audit event is emitted immediately before returning the `{error}`: `{actor:"exec-sandbox", action:"exit", target:sandbox_id, decision:"deny", context:{status:"proxy_start_failed", error:<msg>, request_id}}`. This closes the spawn-without-exit audit-completeness gap (ADR 013): every run that has emitted `spawn` emits a matching terminal event. Emission is best-effort — an empty `audit_socket` is a no-op; an IPC error is swallowed.
+- **Failure modes:** this is the failure path. The payload does not run; no backend (`bwrap`/`runsc`) is selected or executed; no success result shape is returned.
+- **References:** ADR 013; `run.go` `Run`; `proxy.go` `Start`.
 
 ---
 
@@ -132,7 +132,7 @@ Behaviors are numbered `B-001`, … sequentially. Numbers are stable references 
 
 - **The sandbox never has network access** regardless of profile, tier, or secret_refs. The only egress is the bind-mounted proxy socket.
 - **A proxy-mode credential value is never observable from inside the sandbox** — not in env, args, payload, or stdout. It exists only on the host-side proxy.
-- **Audit and vault calls are best-effort and non-fatal** except proxy-start failure (B-007), which aborts the run before any payload executes.
+- **Audit and vault calls are best-effort and non-fatal** except proxy-start failure (B-007), which aborts the run before any payload executes. A run that has emitted `spawn` always emits a matching terminal event — either `exit`/allow on success, or `exit`/deny with `status:"proxy_start_failed"` on early proxy failure (ADR 013).
 - **Every requested `profile.limits` cap is enforced or its degradation is recorded** (B-009): a cap is applied on the active backend, or — for the secondary `cpu_count`/`disk_mb` controls only — it appears in `sandbox_status.limits.degraded` with a stderr `WARNING`. No requested cap is ever silently ignored. `max_output_bytes` is enforced host-side **above** the `tier` seam, identically under every backend (no per-tier wiring, no degrade path); truncation is never silent — the capped streams are listed in `sandbox_status.limits.output_truncated`.
 - **The only writable host surface is `run.workdir` at `/work`** (B-010), and only when the caller sets it. The rootfs, system dirs, `/payload.sh`, and any `FileRead{paths}` mounts (B-011) are always read-only; the writable surface never widens beyond the single caller-supplied directory, and no host mount (writable or read-only) ever opens an egress path (the network stays unshared).
 - **Every successful run returns the full result shape** (B-005); there is no partial-result path on the success side.

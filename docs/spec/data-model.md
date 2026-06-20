@@ -1,7 +1,7 @@
 # Data Model
 
 **Project:** exec-sandbox
-**Last updated:** 2026-06-19
+**Last updated:** 2026-06-20
 
 What data exists, how it's structured, where it lives. exec-sandbox holds **no persistent
 state** — every run is ephemeral. The data model is therefore mostly wire/interchange formats
@@ -188,7 +188,8 @@ On an early failure (proxy could not start) the result is instead `{ "error": st
 - **Schema:** `{ "op": "emit", "event": { "actor": "exec-sandbox", "action": "spawn"|"inject_failed"|"exit", "target": sandbox_id, "decision": "allow"|"deny", "context": { … } } }`
   - `spawn` context: `{tier, request_id}`
   - `inject_failed` context: `{request_id}`
-  - `exit` context: `{exit_code, duration_ms, status, request_id}` (`status` is `"clean"` or `"timeout"`)
+  - `exit` (success) context: `{exit_code, duration_ms, status, request_id}` (`status` is `"clean"` or `"timeout"`; `decision` is `"allow"`)
+  - `exit` (early proxy-start failure) context: `{status:"proxy_start_failed", error:<msg>, request_id}` (`decision` is `"deny"`); no `exit_code` or `duration_ms` (ADR 013). Every run that emits `spawn` emits a matching `exit` event — either the success shape or the failure shape.
 
 ### `sandbox_identity`
 

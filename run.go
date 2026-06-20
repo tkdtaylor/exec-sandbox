@@ -111,6 +111,17 @@ func Run(req RunRequest) map[string]any {
 	}
 
 	if err := proxy.Start(proxySock); err != nil {
+		// A run that emitted spawn MUST emit a matching terminal event (ADR 013).
+		// action:"exit", decision:"deny" + status:"proxy_start_failed" distinguishes this
+		// from a clean exit. No credential, no handle, no attestation in the event.
+		emit(req.Wiring.AuditSocket, map[string]any{
+			"actor": "exec-sandbox", "action": "exit", "target": sandboxID, "decision": "deny",
+			"context": map[string]any{
+				"status":     "proxy_start_failed",
+				"error":      err.Error(),
+				"request_id": req.Wiring.RequestID,
+			},
+		})
 		return map[string]any{"error": "proxy start failed: " + err.Error()}
 	}
 	defer func() { proxy.Stop(); proxy.Wipe() }()
