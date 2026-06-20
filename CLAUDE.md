@@ -25,9 +25,12 @@ Structured current-state snapshot: [`docs/spec/`](docs/spec/). Full contract ref
 
 ```
 main.go       ← CLI entrypoint — `exec-sandbox run` reads a JSON RunRequest from stdin
-run.go        ← Run() orchestration: allowlist parse → vault.inject → proxy → bwrap → audit
-proxy.go      ← host-side egress proxy (Unix socket, domain allowlist, credential injection)
-run_test.go   ← integration + unit tests (sandbox tests skip when bwrap is absent)
+run.go        ← Run() orchestration: allowlist parse → snapshot → vault.inject → proxy → backend → audit
+proxy.go      ← host-side egress proxy (Unix socket, domain + per-host verb allowlist, credential injection)
+gvisor.go     ← Tier-2 gVisor/runsc backend: OCI bundle/spec generation behind the tier seam
+limits.go     ← profile.limits parsing + host-side output-cap writer (cpu/mem/pids/disk/timeout/output)
+snapshot.go   ← snapshot/restore reset boundary: pristine per-run baseline, teardown, leak-proof restore
+*_test.go     ← integration + unit tests (sandbox tests skip when bwrap is absent)
 docs/         ← spec + planning + history (the source-of-truth side)
   CONTRACT.md     v1 contract reference (mirrors the ecosystem's v1 interface contract §2)
   spec/           authoritative current-state snapshot — SPEC.md, behaviors, architecture, data-model, interfaces, configuration, fitness-functions
@@ -66,7 +69,9 @@ go test ./...       # run tests directly
 ## Conventions
 
 - Single Go `main` package at the repo root; no internal package split yet (the codebase is
-  small enough that the four `.go` files are the unit of organization).
+  small enough that the handful of `.go` source files — `main.go`, `run.go`, `proxy.go`,
+  `gvisor.go`, `limits.go`, `snapshot.go` — plus their `_test.go` files are the unit of
+  organization).
 - Task files are named `NNN-short-name.md` (zero-padded, sequential across all task states)
 - Every task has a paired test spec; no implementation starts without one
 - Tasks follow Unix philosophy — one task, one responsibility; break things smaller when in doubt (see Design principles below)
@@ -196,7 +201,7 @@ export CLAUDE_DISABLED_HOOKS=desktop-notify,batch-format-typecheck  # Disable sp
 
 ### Ask first
 - Modifying files in `docs/plans/`, `docs/tasks/`, or `docs/architecture/decisions/` — they are planning and historical documents
-- Deleting or renaming existing source files (`main.go`, `run.go`, `proxy.go`, `run_test.go`)
+- Deleting or renaming existing source files (`main.go`, `run.go`, `proxy.go`, `gvisor.go`, `limits.go`, `snapshot.go`, or any `*_test.go`)
 - Adding dependencies not already in the tech stack (this project is currently stdlib-only)
 - Changing the project structure beyond what a task requires
 - Reorganizing `docs/spec/` (splitting files, renaming sections) — the structure is a stable contract; restructure deliberately, not opportunistically

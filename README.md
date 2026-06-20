@@ -6,9 +6,12 @@ network**, and its **only** path out is a host-side egress proxy with a domain a
 `vault` plugs credential injection into that proxy — in proxy mode the secret never enters
 the sandbox at all.
 
-- **Real Tier-1 isolation** — `bwrap --unshare-all` (no network namespace; a direct connect returns curl `000`)
-- **exec-sandbox owns the network boundary** — `--network none` + egress proxy (Unix socket) + allowlist
+- **Tiered isolation** — Tier-1 `bwrap --unshare-all` (no network namespace; a direct connect returns curl `000`) and Tier-2 gVisor/`runsc` over a generated OCI bundle, selected per run by `tier` (ADR 002)
+- **exec-sandbox owns the network boundary** — `--network none` + egress proxy (Unix socket) + domain allowlist, narrowed by an optional **per-host HTTP-verb allowlist** (ADR 008)
 - **vault.inject at spawn** — pull-triggered push; presents `{handle, sandbox_identity}`, receives `{credential, binding}` (proxy) and injects it into allowlisted egress
+- **Per-run resource limits** — cpu / memory / pids / disk / wall-clock plus host-side stdout/stderr output caps enforced above the tier seam (ADR 003, ADR 007)
+- **Controlled host I/O** — optional writable `/work` dir, read-only `FileRead` mounts, and `env`/`PATH` provisioning (ADR 004, ADR 005)
+- **Leak-proof reset** — snapshot/restore returns the sandbox to a pristine baseline between runs (ADR 009)
 - **Audit emission** — spawn / inject / exit events to `audit-trail`
 
 > Prior-art verdict (from the project's internal design notes): **BUILD an open tiered orchestration harness** — adopt OCI runtimes (gVisor/Firecracker/Kata) as pluggable backends; derive Tier 1 from `@anthropic-ai/sandbox-runtime` (Apache-2.0). The value-add is the harness: policy→tier selection, vault credential injection, audit emission. **Language: Go** (bubblewrap/OCI/containerd ecosystem). **License: Apache-2.0.**
@@ -27,21 +30,23 @@ sandbox_identity, mode)` itself at the boundary. Validated by the tracer-bullet 
 ## Build & run
 
 ```sh
-go build ./... && go test ./...      # the integration tests need bubblewrap (skip if absent)
+make build && go test ./...          # the integration tests need bubblewrap (skip if absent)
 echo '{"run":{"payload":"…","profile":{…},"tier":"bubblewrap","secret_refs":["…"]},
        "wiring":{"vault_socket":"…","audit_socket":"…","origin_map":{…},"injection_mode":"proxy"}}' \
-  | exec-sandbox run
+  | ./bin/exec-sandbox run
 ```
 
 ## Status
 
-🚧 **v0 implementation, v1 contract.** Working Tier-1 bubblewrap isolation + Unix-socket
-egress proxy + allowlist + vault.inject (proxy mode) + audit emission (ported from the
-tracer-bullet). **Deferred (v1):** Tier 2/3 (gVisor / Firecracker /
-Kata) behind the OCI seam, full seccomp profile, env-mode injection + wipe clock, SOCKS5
-proxy, resource cgroup limits, sandbox_identity attestation signatures, **egress hardening
-(two-layer network filter — see below)**. See [docs/CONTRACT.md](docs/CONTRACT.md) and the
-scoping doc.
+🚧 **v0 implementation, v1 contract.** Working Tier-1 bubblewrap **and** Tier-2 gVisor/`runsc`
+isolation behind the OCI seam + Unix-socket egress proxy + domain allowlist + per-host verb
+allowlist + per-run resource limits (cpu/mem/pids/disk/timeout/output) + writable `/work`,
+read-only `FileRead` mounts, env provisioning + snapshot/restore reset + vault.inject (proxy
+mode) + audit emission (ported from the tracer-bullet).
+**Deferred (v1):** Tier 3 (Firecracker / Kata) behind the OCI seam, full seccomp profile,
+env-mode injection + wipe clock, SOCKS5 proxy, sandbox_identity attestation signatures,
+**egress hardening (two-layer network filter — see below)**. See
+[docs/CONTRACT.md](docs/CONTRACT.md).
 
 ## Adapter seam & standards
 
@@ -49,7 +54,8 @@ OCI Runtime Spec + Linux seccomp-BPF (+ WASI for a future WASM tier). Pluggable 
 bubblewrap (Tier 1, default), gVisor/runsc (Tier 2), Firecracker/Kata (Tier 3).
 
 **Egress hardening (v1) — reference architecture:** the current egress is a single-layer
-Unix-socket HTTP proxy + domain allowlist (the Tier-1 floor). For the v1 network-namespace
+Unix-socket HTTP proxy with a domain allowlist plus an optional per-host verb allowlist (the
+Tier-1 floor). For the v1 network-namespace
 egress filter, the reference is Alibaba **OpenSandbox OSEP-0001**'s two-layer default-deny
 model — Layer 1 DNS proxy (iptables `REDIRECT`), Layer 2 `nftables` filter, with graceful
 degradation to DNS-only when `CAP_NET_ADMIN` is unavailable (Apache-2.0). Evaluated as prior

@@ -1,7 +1,7 @@
 # Interfaces
 
 **Project:** exec-sandbox
-**Last updated:** 2026-06-18
+**Last updated:** 2026-06-20
 
 The system's contact surface — everything that calls into the system, everything it calls out
 to, and the public boundaries within it.
@@ -41,11 +41,14 @@ The egress proxy listens on a Unix socket (`/proxy.sock` inside the sandbox) and
 This is not a public API — it is the sandbox's only egress path. The payload reaches it via
 `--unix-socket /proxy.sock`. Behavior:
 
+The proxy checks the **host first, then the request method** (ADR 008), then resolves the route:
+
 | Condition | Response |
 |-----------|----------|
-| Host in allowlist + has `origin_map` route | Forwarded to the origin (credential injected if loaded); upstream status/body returned |
-| Host not in allowlist | `403 blocked-by-allowlist` |
-| Host allowlisted but no `origin_map` route | `502 no-route` |
+| Host in allowlist, verb permitted, has `origin_map` route | Forwarded to the origin (credential injected if loaded); upstream status/body returned |
+| Host not in allowlist | `403 blocked-by-allowlist` (no outbound, no injection) |
+| Host allowlisted but request method not in the host's verb set | `403 blocked-by-method` (distinct body; no outbound, no injection — ADR 008) |
+| Host allowlisted + verb permitted but no `origin_map` route | `502 no-route` |
 | Upstream/dial error | `502` with the error string |
 
 ---
@@ -147,7 +150,7 @@ The empty network namespace is untouched.
 ### `EgressProxy` (`proxy.go`)
 
 ```go
-func NewEgressProxy(allowlist []string, originMap map[string][2]string) *EgressProxy
+func NewEgressProxy(allowlist []string, verbAllowlist map[string]map[string]bool, originMap map[string][2]string) *EgressProxy
 func (p *EgressProxy) SetCredential(host string, c Credential)
 func (p *EgressProxy) Wipe()
 func (p *EgressProxy) Start(socketPath string) error
@@ -155,7 +158,7 @@ func (p *EgressProxy) Stop()
 ```
 
 - **Consumers:** `Run()`.
-- **Required behavior:** enforces the allowlist on every request; injects a loaded credential only into allowlisted requests; the sandbox must never be able to read the credential; credentials are wiped on teardown.
+- **Required behavior:** enforces the host allowlist on every request, then the per-host verb allowlist (ADR 008 — a host with an empty verb set is unconstrained); injects a loaded credential only into requests that pass both checks; the sandbox must never be able to read the credential; credentials are wiped on teardown.
 
 ### `ipcCall(socket string, req map[string]any) (map[string]any, error)` (`run.go`)
 

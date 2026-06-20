@@ -1,7 +1,7 @@
 # Behaviors
 
 **Project:** exec-sandbox
-**Last updated:** 2026-06-19 (ADR 009: snapshot/restore leak-proof clean-slate reset boundary — B-012)
+**Last updated:** 2026-06-20 (drift audit: align B-001 teardown mechanism and B-004 spawn ordering with run.go)
 
 What the system does, observably. Each behavior describes a triggering condition, the system's response, and any externally-visible side effects.
 
@@ -24,7 +24,7 @@ Behaviors are numbered `B-001`, … sequentially. Numbers are stable references 
 
 - **Trigger:** `exec-sandbox run` receives a JSON `RunRequest` on stdin with a `run.payload`.
 - **Response:** writes `req.run.payload` to a `payload.sh` (mode 0600) in a fresh temp dir, selects the isolation backend by `run.tier` (see B-008), then runs the payload under that backend with a minimal read-only root (`/usr`, `/etc`, conditionally `/bin /lib /lib64 /sbin`), `/proc`, `/dev`, a `/tmp` tmpfs, `PATH=/usr/bin:/bin`, the payload bind-mounted read-only as `/payload.sh`, and the egress proxy socket bind-mounted as `/proxy.sock` — with **no network namespace regardless of tier**. When `run.workdir` is set, the named host directory is additionally bind-mounted **read-write** at `/work` and becomes the payload's cwd (see B-010); otherwise there is no `/work` mount. For the bubblewrap tier this is `bwrap --unshare-all --die-with-parent --clearenv`; for the gvisor tier it is `runsc run` over a generated OCI bundle whose spec declares an empty network namespace (see B-008). Captures stdout, stderr, and exit code. Returns a JSON result `{stdout, stderr, exit_code, sandbox_status}` on stdout.
-- **Side effects:** the temp dir and its contents (payload, proxy socket; for gvisor also the OCI bundle in its own temp dir) are created and removed (`defer os.RemoveAll` / the backend cleanup func); spawn and exit audit events are emitted (see B-004).
+- **Side effects:** the temp dir and its contents (payload, proxy socket; for gvisor also the OCI bundle in its own temp dir) are created and removed (the one-shot `baseline.teardown()` → `os.RemoveAll(work)` + `proxy.Wipe()`, plus the backend cleanup func); spawn and exit audit events are emitted (see B-004).
 - **Failure modes:** if the selected runtime (`bwrap` or `runsc`) fails to start (e.g. binary absent or non-exec error), `exit_code` is set to `127` and the error string is appended to stderr. If the runtime exits non-zero, that exit code is propagated. An unrecognized tier returns `{error: "tier not implemented: <tier>"}` without running anything (see B-008).
 - **References:** ADR-001 D2/D3, ADR-002; `run.go` `Run` / `backendFor` / `bwrapArgv`; `gvisor.go`.
 
@@ -47,7 +47,7 @@ Behaviors are numbered `B-001`, … sequentially. Numbers are stable references 
 ### B-004: Emit spawn / inject_failed / exit audit events
 
 - **Trigger:** the lifecycle of a run — at spawn, on a failed injection, and at exit.
-- **Response:** emits JSON-lines audit events to the `audit_socket`. `spawn` (`decision: allow`, context `{tier, request_id}`) before the inject loop; `inject_failed` (`decision: deny`) per failed handle; `exit` (`decision: allow`, context `{exit_code, duration_ms, request_id}`) after the payload finishes.
+- **Response:** emits JSON-lines audit events to the `audit_socket`. `spawn` (`decision: allow`, context `{tier, request_id}`) is emitted first — before the baseline snapshot (B-012) and the inject loop; `inject_failed` (`decision: deny`) per failed handle; `exit` (`decision: allow`, context `{exit_code, duration_ms, request_id}`) after the payload finishes.
 - **Side effects:** one `emit` IPC call per event.
 - **Failure modes:** emission is best-effort. An empty `audit_socket` makes `emit` a no-op; an IPC error is swallowed (the run is not aborted).
 - **References:** ADR-001 D6; `run.go` `emit`.

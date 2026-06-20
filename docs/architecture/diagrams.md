@@ -1,7 +1,7 @@
 # Architecture Diagrams
 
 **Project:** exec-sandbox
-**Last updated:** 2026-06-19 (ADR 009: snapshot/restore leak-proof clean-slate reset boundary in Run())
+**Last updated:** 2026-06-20 (drift audit: add snapshot.go to the §3 component view; correct §4 spawn→snapshot order to match run.go)
 
 C4-structured Mermaid diagrams covering the system at progressively detailed levels (Context → Container → Component), plus the runtime sequence flow that shows how those pieces collaborate. See [overview.md](overview.md) for prose context, [decisions/](decisions/) for the ADRs referenced here, and [`../spec/architecture.md`](../spec/architecture.md) for the structured element catalog these diagrams render.
 
@@ -76,7 +76,8 @@ C4Component
         Component(seam, "backendFor / Backend", "run.go", "Tier seam: selects bubblewrapBackend (bwrapArgv) or gvisorBackend by run.tier; unknown tier → error")
         Component(gvisor, "gvisorBackend / gvisorOCISpec", "gvisor.go", "Builds an OCI bundle (empty netns, /proxy.sock only egress) and the runsc run argv")
         Component(ipc, "ipcCall / vaultInject / emit", "run.go", "Unix-socket JSON-lines IPC to vault and audit-trail")
-        Component(egress, "EgressProxy", "proxy.go", "Allowlist enforcement + credential injection on a Unix socket")
+        Component(snapshot, "sandboxBaseline / restore", "snapshot.go", "Snapshot/restore reset boundary: pristine per-run baseline, one-shot teardown, leak-proof restore (ADR 009)")
+        Component(egress, "EgressProxy", "proxy.go", "Host + per-host verb allowlist enforcement + credential injection on a Unix socket")
     }
 
     System_Ext(vault, "vault")
@@ -86,6 +87,7 @@ C4Component
     Rel(run, seam, "Selects backend by tier", "backendFor(tier)")
     Rel(seam, gvisor, "gvisor tier", "Backend.Argv")
     Rel(run, ipc, "vault.inject / emit", "")
+    Rel(run, snapshot, "snapshotBaseline / teardown / restore", "")
     Rel(run, egress, "NewEgressProxy / SetCredential / Start / Stop / Wipe", "")
     Rel(ipc, vault, "inject", "Unix socket")
     Rel(ipc, audit, "emit", "Unix socket")
@@ -112,8 +114,8 @@ sequenceDiagram
 
     Agent->>Run: RunRequest {payload, profile, tier, secret_refs} on stdin
     Run->>Run: parse NetConnect allowlist + per-host verb sets; mint sandbox_identity
-    Run->>Run: snapshotBaseline → pristine baseline (work dir + payload.sh + fresh proxy, empty creds) [ADR 009]
     Run->>Audit: emit spawn {actor, action:spawn, target:sandbox_id, decision:allow}
+    Run->>Run: snapshotBaseline → pristine baseline (work dir + payload.sh + fresh proxy, empty creds) [ADR 009]
     loop for each secret_ref handle
         Run->>Vault: vault.inject(handle, sandbox_identity, mode)
         alt proxy-mode success

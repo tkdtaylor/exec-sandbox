@@ -1,7 +1,7 @@
 # Architecture — C4 Element Catalog
 
 **Project:** exec-sandbox
-**Last updated:** 2026-06-18
+**Last updated:** 2026-06-20
 
 The structured catalog of architectural elements that the diagrams in [`../architecture/diagrams.md`](../architecture/diagrams.md) render. Tables here are the **machine-readable spec** for the system's structure.
 
@@ -41,7 +41,7 @@ When the structure changes, both files update in the same commit.
 
 | Name | Technology | Responsibility | Source path | Depends on |
 |------|------------|----------------|-------------|------------|
-| exec-sandbox CLI | Go (`main` package) | Parse argv, read `RunRequest` on stdin, orchestrate the run, write result on stdout | `main.go`, `run.go` | Egress proxy, isolation sandbox, vault, audit-trail |
+| exec-sandbox CLI | Go (`main` package) | Parse argv, read `RunRequest` on stdin, orchestrate the run, write result on stdout | `main.go`, `run.go`, `snapshot.go`, `limits.go` | Egress proxy, isolation sandbox, vault, audit-trail |
 | Egress proxy | Go `net/http` over a Unix socket | Enforce domain allowlist; inject credentials; forward allowlisted requests to the origin | `proxy.go` | Allowlisted origin |
 | isolation sandbox | `bwrap --unshare-all` (Tier 1) or `runsc` over an OCI bundle (Tier 2), selected by `run.tier` | Run `payload.sh` with no network namespace; only `/proxy.sock` bind-mounted for egress | (runtime; argv/spec built in `run.go` `bwrapArgv` and `gvisor.go` `gvisorOCISpec`) | bubblewrap (`bwrap`) / gVisor (`runsc`), Egress proxy |
 
@@ -56,13 +56,14 @@ When the structure changes, both files update in the same commit.
 | Container | Component | Source path | Responsibility | Depends on |
 |-----------|-----------|-------------|----------------|------------|
 | exec-sandbox CLI | `main` | `main.go` | CLI entry: argv check, read stdin, call `Run()`, marshal result to stdout | `Run()` |
-| exec-sandbox CLI | `Run()` | `run.go` | Orchestration core: allowlist parse, identity mint, audit emit, vault.inject loop, proxy start, backend exec, result assembly, teardown | `backendFor`, `vaultInject`, `emit`, `EgressProxy` |
+| exec-sandbox CLI | `Run()` | `run.go` | Orchestration core: allowlist parse, identity mint, audit emit, baseline snapshot, vault.inject loop, proxy start, backend exec, result assembly, teardown | `backendFor`, `snapshotBaseline`, `vaultInject`, `emit`, `EgressProxy` |
 | exec-sandbox CLI | `backendFor` / `Backend` | `run.go` | Tier seam: select `bubblewrapBackend` or `gvisorBackend` by `run.tier`; unknown tier → `tier not implemented` error | `bwrapArgv`, `gvisorBackend` |
 | exec-sandbox CLI | `bwrapArgv` | `run.go` | Build the Tier-1 bubblewrap argv (`--unshare-all`, no network namespace) | bubblewrap |
 | exec-sandbox CLI | `gvisorBackend` / `gvisorOCISpec` | `gvisor.go` | Build the Tier-2 OCI bundle (empty netns, `/proxy.sock` only egress) and the `runsc run` argv | gVisor (`runsc`) |
 | exec-sandbox CLI | `ipcCall` / `vaultInject` / `emit` | `run.go` | Unix-socket JSON-lines IPC to vault and audit-trail | vault, audit-trail |
 | exec-sandbox CLI | `netAllowlist` | `run.go` | Parse the egress allowlist from `profile.capabilities[NetConnect]` | — |
-| Egress proxy | `EgressProxy` | `proxy.go` | Allowlist enforcement, credential injection, request forwarding, credential wipe | Allowlisted origin |
+| exec-sandbox CLI | `sandboxBaseline` / `snapshotBaseline` / `restore` | `snapshot.go` | Snapshot/restore reset boundary: build the pristine per-run baseline (work dir + `payload.sh` + fresh proxy), one-shot `teardown`, and leak-proof `restore` to a clean slate (ADR 009) | `EgressProxy` |
+| Egress proxy | `EgressProxy` | `proxy.go` | Host + per-host verb allowlist enforcement, credential injection, request forwarding, credential wipe | Allowlisted origin |
 
 ---
 

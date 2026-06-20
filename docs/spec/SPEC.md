@@ -1,7 +1,7 @@
 # exec-sandbox — Authoritative Spec
 
 **Project:** exec-sandbox
-**Last updated:** 2026-06-18
+**Last updated:** 2026-06-20
 
 ## What this directory is
 
