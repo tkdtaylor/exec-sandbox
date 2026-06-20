@@ -7,6 +7,13 @@ import (
 	"sort"
 )
 
+// mkdirTempFn is the function snapshotBaseline uses to create the per-run work directory.
+// It defaults to os.MkdirTemp. Tests may override it to inject a pre-configured directory
+// (e.g. one with a pre-bound proxy socket to force proxy.Start to fail) — see
+// proxy_failure_audit_test.go. Override must be restored via t.Cleanup; this is not
+// goroutine-safe so tests that override must not run in parallel.
+var mkdirTempFn = os.MkdirTemp
+
 // sandboxBaseline is the pristine per-run state Run() builds before the payload executes: the host
 // work dir (the writable surface), the payload.sh contents seeded into it, and a fresh EgressProxy
 // with an empty credential map. It is the named "baseline" a leak-proof reset can be asserted
@@ -28,7 +35,7 @@ type sandboxBaseline struct {
 // state BEFORE any payload runs (TC-008-01). The returned baseline's writable surface contains
 // exactly payload.sh and the credential map is empty.
 func snapshotBaseline(payload string, proxy *EgressProxy) (*sandboxBaseline, error) {
-	work, err := os.MkdirTemp("", "exec-sandbox-")
+	work, err := mkdirTempFn("", "exec-sandbox-")
 	if err != nil {
 		return nil, err
 	}
