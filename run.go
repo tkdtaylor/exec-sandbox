@@ -323,14 +323,17 @@ type Backend interface {
 }
 
 // backendFor selects the isolation backend for a tier. "" and "bubblewrap" select Tier-1
-// (bwrap); "gvisor" selects the runsc Tier-2 backend. Any other tier is a hard error — there is
-// no silent fall-back to bubblewrap.
+// (bwrap); "gvisor" selects the runsc Tier-2 backend; "firecracker" selects the Tier-3
+// Firecracker microVM backend (ADR 010). Any other tier is a hard error — there is no silent
+// fall-back to bubblewrap.
 func backendFor(tier string) (Backend, error) {
 	switch tier {
 	case "", "bubblewrap":
 		return bubblewrapBackend{}, nil
 	case "gvisor":
 		return gvisorBackend{}, nil
+	case "firecracker":
+		return firecrackerBackend{}, nil
 	default:
 		return nil, errors.New("tier not implemented: " + tier)
 	}

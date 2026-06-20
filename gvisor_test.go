@@ -42,7 +42,8 @@ func TestBackendForRoutesByTier(t *testing.T) {
 }
 
 func TestBackendForUnknownTierErrors(t *testing.T) {
-	for _, tier := range []string{"firecracker", "kata", "docker", "nonsense"} {
+	// "firecracker" is now wired (task 013) — only genuinely-unknown tiers must error.
+	for _, tier := range []string{"kata", "docker", "nonsense"} {
 		b, err := backendFor(tier)
 		if err == nil {
 			t.Fatalf("backendFor(%q) returned nil error; expected 'tier not implemented'", tier)
@@ -65,6 +66,8 @@ func backendTypeName(b Backend) string {
 		return "main.bubblewrapBackend"
 	case gvisorBackend:
 		return "main.gvisorBackend"
+	case firecrackerBackend:
+		return "main.firecrackerBackend"
 	default:
 		return "unknown"
 	}

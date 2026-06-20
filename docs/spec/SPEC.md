@@ -81,5 +81,9 @@ not yet implemented. The seam keeps the `run()` contract stable across tiers.
   for agent-generated code.
 - **No persistent state** — every run is ephemeral (fresh temp dir, fresh proxy, wiped at
   teardown).
-- **Tier 3 not yet implemented** — `firecracker` is accepted by the `tier` field but returns
-  `tier not implemented`. Tier-1 (`bubblewrap`) and Tier-2 (`gvisor`) are wired.
+- **Tier 3 config-generating backend wired, VMM launch not yet wired** — `firecracker`
+  dispatches to `firecrackerBackend` (ADR 010 D1); the backend generates the microVM config
+  (machine-config, boot-source, root-drive, vsock) as a pure function of on-host paths, with
+  no `network-interface` key (no-NIC by omission, D2). The one-shot VMM launch over the
+  Firecracker REST socket is not yet wired (task 015). Tier-1 (`bubblewrap`), Tier-2 (`gvisor`),
+  and the config-generating Tier-3 (`firecracker`) backend are all dispatched by `backendFor`.
