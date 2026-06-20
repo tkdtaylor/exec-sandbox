@@ -1,7 +1,7 @@
 # Architecture Diagrams
 
 **Project:** exec-sandbox
-**Last updated:** 2026-06-19 (ADR-008: per-host HTTP-verb allowlist enforcement in the egress proxy)
+**Last updated:** 2026-06-19 (ADR 009: snapshot/restore leak-proof clean-slate reset boundary in Run())
 
 C4-structured Mermaid diagrams covering the system at progressively detailed levels (Context → Container → Component), plus the runtime sequence flow that shows how those pieces collaborate. See [overview.md](overview.md) for prose context, [decisions/](decisions/) for the ADRs referenced here, and [`../spec/architecture.md`](../spec/architecture.md) for the structured element catalog these diagrams render.
 
@@ -112,6 +112,7 @@ sequenceDiagram
 
     Agent->>Run: RunRequest {payload, profile, tier, secret_refs} on stdin
     Run->>Run: parse NetConnect allowlist + per-host verb sets; mint sandbox_identity
+    Run->>Run: snapshotBaseline → pristine baseline (work dir + payload.sh + fresh proxy, empty creds) [ADR 009]
     Run->>Audit: emit spawn {actor, action:spawn, target:sandbox_id, decision:allow}
     loop for each secret_ref handle
         Run->>Vault: vault.inject(handle, sandbox_identity, mode)
@@ -132,9 +133,12 @@ sequenceDiagram
     Proxy-->>Box: forwarded response (or 403 blocked-by-allowlist / 403 blocked-by-method / 502 no-route)
     Box-->>Run: stdout, stderr, exit_code
     Run->>Audit: emit exit {action:exit, exit_code, duration_ms}
-    Run->>Proxy: Stop() + Wipe()
+    Run->>Run: baseline.teardown() → RemoveAll(work) + Wipe() (one-shot terminal cleanup) [ADR 009]
+    Run->>Proxy: Stop()
     Run-->>Agent: {stdout, stderr, exit_code, sandbox_status} on stdout
 ```
+
+> **Snapshot/restore reset boundary (ADR 009).** `Run()` builds a `sandboxBaseline` (`snapshotBaseline`) before the payload runs — the pristine work dir + `payload.sh` + fresh proxy with an empty credential map — and the default one-shot path is `snapshot → run → teardown` (terminal `RemoveAll(work)` + `Wipe()`), observationally identical to the prior inlined setup/teardown. The named `restore` operation is the **reset loop** a future reuse path would call *instead of* teardown between invocations: it wipes the writable surface back to exactly the pristine file set and clears the credential map (`restored == fresh`), keeping the netns unshared and the same fresh `/proxy.sock` as the only egress. The reset is **host-side only and tier-independent** — it covers the host work dir, `payload.sh`, and the host-side proxy credential map under both bwrap and gVisor, and does not reach inside a tier's kernel root. No long-lived process and no reuse trigger exist yet (deferred per ADR 009 Q2/Q3); the one-shot contract is unchanged.
 
 ---
 
