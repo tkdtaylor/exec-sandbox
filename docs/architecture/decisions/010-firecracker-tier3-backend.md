@@ -304,10 +304,10 @@ implementation (likely in the first task or a follow-up ADR amendment):
   prebuilt, or generate at first run) is not established anywhere in the repo. This affects
   reproducibility, supply-chain scanning (`dep-scan` does not cover a kernel image), and binary size.
   **Decide before the rootfs/boot task.**
-- **Q2 — `/work` and `FileRead` mount semantics in a microVM.** Bubblewrap/gVisor bind-mount host
-  paths (ADR 004/005). A microVM has no host bind-mount; the writable `/work` and read-only FileRead
-  paths must be presented via a block device, a virtio-fs share, or a copy-in/copy-out at
-  boot/teardown. Each has different isolation and performance trade-offs and none is decided. The
+- **Q2 — `/work` and `FileRead` mount semantics in a microVM.** **RESOLVED → block device; see the
+  Q2 resolution note (2026-06-21, task 017) below.** Bubblewrap/gVisor bind-mount host paths (ADR
+  004/005). A microVM has no host bind-mount; the writable `/work` and read-only FileRead paths must
+  be presented via a block device, a virtio-fs share, or a copy-in/copy-out at boot/teardown. The
   read-only-ness of FileRead and the single-writable-surface property (ADR 005) must be preserved
   whatever mechanism is chosen.
 - **Q3 — Jailer privilege/runtime model.** **RESOLVED → see Amendment 1 (2026-06-20).** The jailer
@@ -481,3 +481,49 @@ process; **CapEff = 0** + **NoNewPrivs = 1** (privilege dropped, cannot be regai
 **root mount is a bwrap `pivot_root` tmpfs newroot** (`0:NNN /newroot`, fs `tmpfs`), not the host's
 real block-device `/`. The task-018 fitness rule consumes the same `assertConstraintsGEJailer`
 observation.
+
+## Q2 resolution note (2026-06-21, task 017) — `/work` + FileRead mount mechanism: BLOCK DEVICE
+
+Q2 (the `/work` + FileRead presentation mechanism in the microVM) is resolved to a **block device**,
+implemented entirely with **unprivileged** host tooling. This note records the decision and its one
+semantic nuance; the present-tense current truth lives in `docs/spec/behaviors.md` B-016 and
+`docs/spec/configuration.md`.
+
+**Decision.** The validated `run.workdir` and each validated FileRead path are presented to the
+guest as ext4 **block-device drives** behind the tier seam — the same mechanism D3 already uses for
+the rootfs and the payload, not a new surface:
+
+- **`/work`** is a single **writable** drive (`/dev/vdc`, `is_read_only:false`) — the microVM
+  analogue of bwrap's `--bind <workdir> /work`. It is the **only** writable drive (ADR 004 / F-006).
+- Each **FileRead** path is a separate **read-only** drive (`/dev/vdd`, `/dev/vde`, …,
+  `is_read_only:true`) — the microVM analogue of `--ro-bind <p> <p>` (ADR 005 / F-007). The
+  device→mountpoint mapping rides the **trusted kernel cmdline** (`exec_sandbox.fileread=…`), not the
+  untrusted payload drive.
+- A **config-level guard** (`validateDriveReadOnly`) asserts exactly one writable drive (the `/work`
+  surface) and refuses any writable FileRead drive before boot — the single-writable-surface and
+  FileRead-read-only properties Q2's closing sentence requires are preserved **structurally** (the
+  `is_read_only` flag at the virtio block layer), not by convention.
+
+**Why block device (over virtio-fs and copy-in/out-as-the-only-mechanism).** virtio-fs is
+**unavailable** on the target host (no `virtiofsd` installed), so a live host share is not an option;
+a block device is the cleanest isolation boundary (a separate VFS, no live host directory exposed to
+the guest); and the host tooling makes it fully **unprivileged** end to end, which is the
+load-bearing constraint inherited from A1.Q3 (no jailer, no root, no `CAP_SYS_ADMIN`):
+
+- **copy-in** seeds each image from the host path with `mkfs.ext4 -d <dir>` — the same unprivileged
+  populate-without-loop-mount technique already used for the rootfs (A1.Q1) and payload drive.
+- **copy-out** reads the guest's `/work` writes back with `debugfs -R "rdump / <hostdir>"` — a
+  userspace ext4 reader. **No privileged loop-mount is ever introduced** (a `mount -o loop` would
+  need root/`CAP_SYS_ADMIN` and is explicitly rejected).
+
+**Semantic nuance — persist at teardown, not live.** Because the writable surface is a block-device
+image rather than a live host share, the guest's `/work` writes land back in the host work dir at
+**teardown** (the copy-out runs in the backend `cleanup` after the guest exits), not live during the
+run. ADR 004's "writes persist to the host work dir" is therefore satisfied with **persist-at-
+teardown** timing under this mechanism. This is the block-device counterpart of the trade-off Q2
+flagged for copy-in/out, and it is the deliberate, accepted cost of the cleaner isolation boundary.
+FileRead drives have **no** copy-out at all (the copy-in is a snapshot), so a guest can never reach a
+host FileRead file — a write fails at the read-only virtio layer and the host file is never modified
+or created. The no-NIC invariant (D2) is untouched: the drives are block devices, never network
+devices; `configHasNoNIC` is re-asserted on the mount-wired config and the vsock stays the only
+host↔guest channel besides the drives.
