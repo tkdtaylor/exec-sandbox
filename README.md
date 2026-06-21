@@ -14,7 +14,19 @@ the sandbox at all.
 - **Leak-proof reset** — snapshot/restore returns the sandbox to a pristine baseline between runs (ADR 009)
 - **Audit emission** — spawn / inject / exit events to `audit-trail`
 
-> Prior-art verdict (from the project's internal design notes): **BUILD an open tiered orchestration harness** — adopt OCI runtimes (gVisor/Firecracker/Kata) as pluggable backends; derive Tier 1 from `@anthropic-ai/sandbox-runtime` (Apache-2.0). The value-add is the harness: policy→tier selection, vault credential injection, audit emission. **Language: Go** (bubblewrap/OCI/containerd ecosystem). **License: Apache-2.0.**
+> Prior-art verdict (from ecosystem prior-art scoping): **BUILD an open tiered orchestration harness** — adopt OCI runtimes (gVisor/Firecracker/Kata) as pluggable backends; derive Tier 1 from `@anthropic-ai/sandbox-runtime` (Apache-2.0). The value-add is the harness: policy→tier selection, vault credential injection, audit emission. **Language: Go** (bubblewrap/OCI/containerd ecosystem). **License: Apache-2.0.**
+
+## Scope
+
+**What exec-sandbox does:** OS-level execution isolation for agent-generated code — tiered namespaces/seccomp → gVisor → Firecracker, selected per run, owning the network egress boundary.
+
+**What it does *not* do (and which sibling owns it instead):**
+- Inspect LLM content — prompts, outputs, tool-calls → **armor**
+- Store or own secret values — it *receives* them at the boundary at spawn → **vault**
+- Decide whether an action is permitted → **policy-engine**
+- Ship a standalone WASM / pre-compiled-tool sandbox — that is a *possible future tier here* (nested inside OS isolation, since WASM is not a standalone trust boundary), **not** a separate block; typed WASM tool *invocation* is an MCP-WASM interop concern, not ours to rebuild. See [ADR 012](docs/architecture/decisions/012-wasm-tool-isolation-scope.md).
+
+`exec-sandbox` is one block in a composable secure-agent ecosystem — each block is standalone and independently usable, and composes with its siblings over published contracts rather than absorbing their responsibilities (no central "god object").
 
 ## Contract (interface-contracts.md §2, v1)
 
@@ -83,7 +95,6 @@ Need hardened deployments, integration help, or a support SLA? **Commercial supp
 exec-sandbox is independent, open-source security tooling. If it saves you time or risk, consider sponsoring continued development:
 
 - 💜 [GitHub Sponsors](https://github.com/sponsors/tkdtaylor)
-- 🤝 [Open Collective](https://opencollective.com/tkdtaylor)
 
 ## Contributing
 
