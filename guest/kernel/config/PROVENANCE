@@ -1,0 +1,45 @@
+exec-sandbox Firecracker Tier-3 guest kernel — provenance (ADR 010 A1.Q1)
+==========================================================================
+
+This records the pinned upstream provenance of the vendored guest kernel artifact. The pin (the
+vendored vmlinux + its sha256) is the supply-chain control: dep-scan does not cover a kernel image,
+so the artifact is verified by a stdlib crypto/sha256 loader before boot and fails fast on mismatch
+(no boot from an unverified artifact). The artifact is also a plain file scannable by code-scanner.
+
+Kernel
+------
+  Artifact:       vmlinux-6.1.176  (uncompressed x86_64 ELF; built `make vmlinux`, NOT bzImage)
+  Linux line:     6.1  (the newest line published in Firecracker's resources/guest_configs/ at
+                  build time — floor per ADR 010 A1.Q1; 6.1 is also Firecracker's current x86_64
+                  reference line)
+  Linux git tag:  v6.1.176
+  Linux commit:   fdb6fcb41cc741ad5eaa7995f278dfcb94fdf795
+  Source:         https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git
+  sha256:         see vmlinux.sha256 (sibling file)
+
+Kernel config
+-------------
+  Config file:    microvm-kernel-ci-x86_64-6.1.config (copied verbatim from upstream Firecracker)
+  From repo:      https://github.com/firecracker-microvm/firecracker
+  Firecracker commit: 5ae6752ed16093bcc3d16eac077d580925422f55
+  Applied with:   `cp microvm-kernel-ci-x86_64-6.1.config .config && make olddefconfig`
+                  (vsock + virtio-blk + ext4 are built-in: CONFIG_VIRTIO_VSOCKETS=y,
+                  CONFIG_VIRTIO_BLK=y, CONFIG_EXT4_FS=y)
+
+Reproduce
+---------
+  git clone --depth 1 --branch v6.1.176 \
+      https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git linux
+  cd linux
+  cp <this-dir>/microvm-kernel-ci-x86_64-6.1.config .config
+  make olddefconfig
+  make -j"$(nproc)" vmlinux
+  # the produced vmlinux matches vmlinux-6.1.176 (modulo non-deterministic BuildID/timestamps;
+  # the pin is the sha256 of THIS vendored artifact, which the loader verifies).
+
+Note on EOL
+-----------
+  Linux 6.1 upstream support ends 2026-09-02. When 6.1's successor is published in Firecracker's
+  resources/guest_configs/, re-run the build against the newer line and re-pin (bump vmlinux-<ver>,
+  vmlinux.sha256, the config, and this note). Until then 6.1.176 is the newest non-EOL point release
+  of the newest Firecracker-published line.

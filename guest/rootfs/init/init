@@ -1,0 +1,63 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+#
+# Guest PID 1 (init=/sbin/init) for the exec-sandbox Firecracker Tier-3 microVM.
+#
+# Responsibilities (kept minimal — this is part of the TCB baked into the read-only base):
+#   1. mount the pseudo-filesystems the payload needs (/proc, /sys, /dev/pts, /tmp),
+#   2. start the trusted vsock->/proxy.sock shim so the payload's egress contract is unchanged
+#      across tiers (it always talks to /proxy.sock; the shim forwards bytes over vsock to the host
+#      EgressProxy — no NIC, no in-guest egress decision),
+#   3. mount the per-run WRITABLE payload drive (/dev/vdb) read-only and run /usr/bin/sh /payload.sh,
+#   4. emit the guest's exit code on the serial console as a sentinel the host launcher parses,
+#   5. power the microVM off (reboot=k panic=1 -> firecracker exits) so no guest outlives the run.
+#
+# The untrusted payload is NEVER baked into this read-only base — it arrives on /dev/vdb, a separate
+# drive the host populates per run. The base digest is therefore stable across runs (scan once, pin
+# once, reset for free).
+
+set -u
+
+# Pseudo-filesystems. The root drive is mounted READ-ONLY, so every writable surface the guest
+# needs (/run for the shim socket + payload mount point, /tmp scratch) is a tmpfs.
+mount -t proc     proc     /proc    2>/dev/null
+mount -t sysfs    sysfs    /sys     2>/dev/null
+mount -t devtmpfs devtmpfs /dev     2>/dev/null
+mkdir -p /dev/pts
+mount -t devpts   devpts   /dev/pts 2>/dev/null
+mount -t tmpfs    tmpfs    /tmp     2>/dev/null
+mount -t tmpfs    tmpfs    /run     2>/dev/null
+
+# Start the dumb vsock->/proxy.sock shim (part of the TCB; see guest/rootfs/shim/main.go). The
+# read-only root cannot host a socket, so the shim listens on /run/proxy.sock (writable tmpfs); the
+# base ships /proxy.sock as a symlink to /run/proxy.sock, so the payload's contract is unchanged —
+# it always talks to /proxy.sock, which resolves to the live socket.
+/sbin/guest-proxy-shim /run/proxy.sock &
+
+# The per-run payload arrives on /dev/vdb (a separate writable drive the host populates), mounted
+# READ-ONLY here: the read-only base never bakes in the untrusted payload. Mount at /run/payload.
+mkdir -p /run/payload
+PAYLOAD=/payload.sh
+if [ -b /dev/vdb ]; then
+	if mount -o ro /dev/vdb /run/payload 2>/dev/null && [ -f /run/payload/payload.sh ]; then
+		PAYLOAD=/run/payload/payload.sh
+	fi
+fi
+
+# Run the payload as /usr/bin/sh /payload.sh — the same entry point as every other tier.
+/usr/bin/sh "$PAYLOAD"
+code=$?
+
+# Emit the exit-code sentinel the host launcher (fc-launch) parses off the serial console. The
+# guest's exit code is NOT the firecracker process exit code, so the launcher reconstructs it from
+# this line and exits with it, keeping Run()'s host-side exit-code mapping unchanged.
+echo "__EXEC_SANDBOX_EXIT__ ${code}"
+
+# Power off: reboot=k panic=1 makes a reboot terminate firecracker cleanly.
+sync
+reboot -f 2>/dev/null
+# If reboot is unavailable, trigger a kernel reset via the sysrq/exit path.
+echo o > /proc/sysrq-trigger 2>/dev/null
+halt -f 2>/dev/null
+# Last resort: loop so PID 1 never exits with a panic before the sentinel is flushed.
+while true; do sleep 1; done

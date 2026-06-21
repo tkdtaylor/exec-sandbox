@@ -194,13 +194,13 @@ Ground truth to mirror:
 ## Post-implementation verification
 
 - [x] **Q1 + Q3 resolved (ADR-010 Amendment 1, 2026-06-20)** — the unblock gate is cleared
-- [ ] TC-015-01..02: direct-firecracker (no jailer) argv under bwrap + bundle create/teardown
-- [ ] TC-015-03: REST PUT order correct, NO `network-interfaces` PUT
-- [ ] TC-015-04: guest boots, payload prints HELLO-FROM-GUEST, exit 0 (L5)
-- [ ] TC-015-05: firecracker's effective constraints ≥ jailer (no jailer; A1.Q3)
-- [ ] TC-015-06/08/09: exit-code mapping (0, non-zero, timeout=137) via the unchanged capture path
-- [ ] TC-015-07: kernel/rootfs pinned + sha256-verified, fails fast on mismatch (A1.Q1)
-- [ ] TC-015-10: missing firecracker / inaccessible kvm → exit 127, no fall-back
+- [x] TC-015-01..02: direct-firecracker (no jailer) argv under bwrap + bundle create/teardown — `TestFirecrackerArgvIsBwrapDirectNoJailer`, `TestFirecrackerBundleCreatedAndTornDown`
+- [x] TC-015-03: REST PUT order correct, NO `network-interfaces` PUT — `TestFirecrackerRESTOrderNoNIC`
+- [x] TC-015-04: guest boots, payload prints HELLO-FROM-GUEST, exit 0 (L5) — `TestFirecrackerGuestBoot_E2E` (real boot on `/dev/kvm`)
+- [x] TC-015-05: firecracker's effective constraints ≥ jailer (no jailer; A1.Q3) — `TestFirecrackerConstraintsGEJailer_Live` **observes the live HOST-SIDE firecracker child** from `/proc/<pid>/*` (all 7 namespaces differ from an unwrapped host process; `uid_map "65534 <hostuid> 1"` = non-host in-namespace uid; `CapEff=0`/`NoNewPrivs=1`; root mount is a `pivot_root` tmpfs newroot, not the host `/`) via `observeFirecrackerChild` + `assertConstraintsGEJailer`; `_Argv` checks the requested argv; `TestFirecrackerConstraintsCheckerRejectsWeakChild` + `...RejectsWeakArgv` prove both checkers are non-vacuous (each weakening — shared ns, host uid, no userns, regained caps, no pivot_root — is rejected). The non-host uid required a wrapper fix (`--uid 65534 --gid 65534`); see ADR 010 Amendment 2.
+- [x] TC-015-06/08/09: exit-code mapping (0, non-zero, timeout=137) via the unchanged capture path — `TestFirecrackerCleanExit_E2E`, `TestFirecrackerNonZeroExit_E2E` (exit 3), `TestFirecrackerTimeout_E2E` (1.066s → 137)
+- [x] TC-015-07: kernel/rootfs pinned + sha256-verified, fails fast on mismatch (A1.Q1) — `TestGuestArtifactsVerifyAndFailFast`, `TestGuestKernelProvenanceVendored`
+- [x] TC-015-10: missing firecracker / inaccessible kvm → exit 127, no fall-back — `TestFirecrackerMissingArtifactsIsHardError`, `TestFirecrackerRunMissingPrereqIsExit127`
 
 ## Test framework notes
 

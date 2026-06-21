@@ -52,9 +52,9 @@ supplied agent-generated payload in a sandbox with **no network**. The sandbox's
 is a host-side egress proxy on a Unix socket that enforces a domain allowlist and injects
 credentials obtained from `vault`. In proxy mode the credential value never enters the sandbox.
 spawn/inject/exit events are emitted to `audit-trail`. Two isolation tiers are wired behind a
-`tier` seam — Tier-1 bubblewrap (`bwrap`) and Tier-2 gVisor (`runsc`) — both enforcing the same
-no-network + proxy-only-egress invariant; Tier-3 Firecracker is accepted by the `tier` field but
-not yet implemented. The seam keeps the `run()` contract stable across tiers.
+`tier` seam — Tier-1 bubblewrap (`bwrap`), Tier-2 gVisor (`runsc`), and Tier-3 Firecracker
+(`firecracker`, a KVM microVM) — all enforcing the same no-network + proxy-only-egress invariant.
+The seam keeps the `run()` contract stable across tiers.
 
 ## Top-level invariants
 
@@ -91,9 +91,15 @@ not yet implemented. The seam keeps the `run()` contract stable across tiers.
   for agent-generated code.
 - **No persistent state** — every run is ephemeral (fresh temp dir, fresh proxy, wiped at
   teardown).
-- **Tier 3 config-generating backend wired, VMM launch not yet wired** — `firecracker`
-  dispatches to `firecrackerBackend` (ADR 010 D1); the backend generates the microVM config
-  (machine-config, boot-source, root-drive, vsock) as a pure function of on-host paths, with
-  no `network-interface` key (no-NIC by omission, D2). The one-shot VMM launch over the
-  Firecracker REST socket is not yet wired (task 015). Tier-1 (`bubblewrap`), Tier-2 (`gvisor`),
-  and the config-generating Tier-3 (`firecracker`) backend are all dispatched by `backendFor`.
+- **Tier 3 Firecracker microVM boots and runs the payload** — `firecracker` dispatches to
+  `firecrackerBackend` (ADR 010 D1), which verifies the pinned guest kernel + rootfs by sha256
+  (fail-fast on mismatch — A1.Q1), builds a per-run bundle, starts the host-side vsock egress
+  bridge, and launches `firecracker` **directly** under the unprivileged `bwrap --unshare-all` +
+  `limits.go` wrapper (**no jailer** — A1.Q3). The launcher drives the REST API in order
+  (machine-config → boot-source → drives → vsock → `InstanceStart`) with no `network-interface`
+  key/PUT (no-NIC by omission, D2), the guest runs `/usr/bin/sh /payload.sh`, and stdout/exit flow
+  through the unchanged host-side capture path. (What remains for later tasks — not done here — is
+  the `limits` → machine-config mapping semantics (task 016), `/work`/FileRead presentation in the
+  guest (task 017), and the teardown-reclaim + constraints-≥-jailer fitness umbrella (task 018).)
+  Tier-1 (`bubblewrap`), Tier-2 (`gvisor`), and Tier-3 (`firecracker`) backends are all dispatched
+  by `backendFor`.

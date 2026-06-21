@@ -1,7 +1,7 @@
 # Configuration
 
 **Project:** exec-sandbox
-**Last updated:** 2026-06-19
+**Last updated:** 2026-06-20 (task 015: Tier-3 Firecracker host prerequisites + vendored pinned guest artifacts)
 
 Every knob the system exposes. exec-sandbox has **no config files and reads no application
 environment variables** — all configuration arrives inside the stdin `RunRequest`. The tunable
@@ -51,7 +51,7 @@ Execution-shaping fields under `run`:
 
 | Key | Type | Default | Effect |
 |-----|------|---------|--------|
-| `run.tier` | string | `""`/`bubblewrap` → Tier-1 (bwrap) | `bubblewrap \| gvisor \| firecracker`. `""`/`bubblewrap` runs bwrap, `gvisor` runs runsc; `firecracker` (or any other value) returns `{error: "tier not implemented: <tier>"}`. The value is echoed into `sandbox_status.tier` and the spawn audit context. |
+| `run.tier` | string | `""`/`bubblewrap` → Tier-1 (bwrap) | `bubblewrap \| gvisor \| firecracker`. `""`/`bubblewrap` runs bwrap, `gvisor` runs runsc, `firecracker` boots a KVM microVM (verified pinned kernel/rootfs, direct firecracker under `bwrap --unshare-all`, no jailer — see B-015); any other value returns `{error: "tier not implemented: <tier>"}`. The value is echoed into `sandbox_status.tier` and the spawn audit context. |
 | `run.profile.capabilities[NetConnect].allowlist` | `[string]` ("host:port") | `[]` | The egress allowlist (ports stripped). Hosts not listed are `403 blocked-by-allowlist` by the proxy. |
 | `run.profile.capabilities[NetConnect].methods` | `[string]` (HTTP verbs) | absent ⇒ all verbs | **Optional per-host verb constraint** (ADR 008). Applies to every host in the same entry's `allowlist`; constrains the HTTP methods permitted to those hosts (canonical upper-case, case-insensitive match). **Absent or empty `[]` ⇒ all verbs allowed** (backward compatible) — empty is *unconstrained*, not deny-all. A non-empty set denies any verb not in it with `403 blocked-by-method` and **no** outbound connection (the host check still runs first). Different verb sets per host ⇒ multiple `NetConnect` entries. The verb *decision* is policy-engine's; the proxy **enforces**. |
 | `run.profile.capabilities[FileRead].paths` | `[string]` (abs host paths) | `[]` | **Read-only host mounts** (ADR 005). Each path is bind-mounted **read-only** at the **same** path inside the sandbox; multiple `FileRead` entries union their paths. Validated before spawn (each must be absolute + exist, else a hard `{error}`). The read-**write** host dir is `run.workdir`, not `FileRead`. |
@@ -114,6 +114,9 @@ and (the project-specific invariant) never enter the sandbox in proxy mode. The
 |--------|-------|-------|
 | Binary | `bin/exec-sandbox` (`make build`) | Single static-ish Go binary |
 | Runtime dependency | `bwrap` on `PATH` | Tier-1 isolation; integration tests skip if absent |
+| Runtime dependency (Tier-2) | `runsc` on `PATH` | gVisor tier; absence is a spawn error (127), never a fall-back; integration tests skip if absent |
+| Runtime dependency (Tier-3) | `firecracker` on `PATH` + rw `/dev/kvm` + `mkfs.ext4` | Firecracker tier (B-015). The host user needs rw on `/dev/kvm` (the `kvm` group or an equivalent ACL) — **no root, no setuid, no jailer**. Absence of any of these is a spawn error (127), never a fall-back; integration tests skip without `/dev/kvm`/`firecracker`. |
+| Vendored guest artifacts (Tier-3) | `guest/kernel/vmlinux-<ver>` + `vmlinux.sha256`, `guest/rootfs/base.ext4` + `base.ext4.sha256` | Pinned, sha256-verified before boot (fail-fast on mismatch — A1.Q1). Built from source by `guest/rootfs/build.sh` (build-time tooling only; no runtime third-party dep). Provenance in `guest/kernel/config/PROVENANCE`. |
 | Ports exposed | none | Egress proxy listens on a per-run Unix socket, not a TCP port |
 | Persistent volumes | none | Per-run temp dir, removed on exit |
 

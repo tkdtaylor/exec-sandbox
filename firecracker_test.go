@@ -173,12 +173,19 @@ func TestFirecrackerConfigWiresVsockDriveBootSource(t *testing.T) {
 		t.Fatalf("boot-source.kernel_image_path = %q, want %q", got, kernel)
 	}
 	bootArgs, _ := bs["boot_args"].(string)
-	if !strings.Contains(bootArgs, "/payload.sh") {
-		t.Fatalf("boot_args %q does not invoke /payload.sh", bootArgs)
+	// PID 1 is /sbin/init (baked into the read-only base): it starts the vsock shim, mounts the
+	// per-run payload drive (/dev/vdb) read-only, and runs /usr/bin/sh /payload.sh from it. The
+	// payload entry point therefore lives in the guest init (guest/rootfs/init/init), NOT on the
+	// kernel cmdline — so boot_args names init=/sbin/init, and the payload is on /dev/vdb. This is the
+	// real boot model (task 015), superseding the task-013 stub that put the payload on the cmdline;
+	// the /usr/bin/sh /payload.sh entry point is exercised end-to-end by TestFirecrackerGuestBoot_E2E.
+	if !strings.Contains(bootArgs, "init=/sbin/init") {
+		t.Fatalf("boot_args %q does not set init=/sbin/init (PID 1 runs the payload from /dev/vdb)", bootArgs)
 	}
-	// The conventional payload entry point is /usr/bin/sh /payload.sh (matches bwrap + gVisor).
-	if !strings.Contains(bootArgs, "/usr/bin/sh") {
-		t.Fatalf("boot_args %q does not reference /usr/bin/sh (expected entry point)", bootArgs)
+	// Boot args carry no `ip=` arg — with no virtio-net device there is no NIC to configure
+	// (reinforces the no-NIC-by-construction invariant at the kernel-cmdline level, ADR 010 D2).
+	if strings.Contains(bootArgs, "ip=") {
+		t.Fatalf("boot_args %q contains an ip= arg — there is no NIC to configure (no-NIC invariant)", bootArgs)
 	}
 
 	// drives: root drive must point at rootfs with is_root_device=true, is_read_only=true.
@@ -219,10 +226,11 @@ func TestFirecrackerConfigWiresVsockDriveBootSource(t *testing.T) {
 	}
 }
 
-// TC-013-08: SPEC.md Non-goals has been updated in-place — the "tier not implemented" line
-// is replaced with present-tense text stating that firecracker dispatches to a
-// config-generating backend and that the VMM launch is the current boundary. No future-tense
-// roadmap language in the spec. This test reads the file and asserts the required invariants.
+// TC-013-08 (updated by task 015): SPEC.md states the present-tense truth — firecracker dispatches
+// to firecrackerBackend, and (now that task 015 has landed) the microVM BOOTS and runs the payload.
+// The old "tier not implemented" line is gone; no future-tense roadmap language appears in the
+// firecracker bullet (deferred work for tasks 016/017/018 is named as not-done-here, present tense,
+// not as a future promise). This guards the spec against drifting back to a stale boundary.
 func TestFirecrackerSpecNonGoalsUpdated(t *testing.T) {
 	raw, err := os.ReadFile("docs/spec/SPEC.md")
 	if err != nil {
@@ -238,26 +246,27 @@ func TestFirecrackerSpecNonGoalsUpdated(t *testing.T) {
 	if !strings.Contains(s, "firecrackerBackend") {
 		t.Fatal("TC-013-08: SPEC.md does not mention firecrackerBackend; spec not updated")
 	}
-	// No future-tense roadmap language in the firecracker Non-goals entry. Scope the scan to that
-	// bullet so legitimate uses elsewhere in the file aren't flagged — the spec is a present-tense
-	// snapshot, and "not yet wired" (present-tense boundary) is allowed; future promises are not.
-	const fcMarker = "**Tier 3 config-generating backend wired"
+	// Task 015 makes the microVM boot — the spec must state that present-tense truth.
+	const fcMarker = "**Tier 3 Firecracker microVM boots"
 	start := strings.Index(s, fcMarker)
 	if start < 0 {
-		t.Fatal("TC-013-08: SPEC.md firecracker Non-goals bullet not found (cannot scope future-tense check)")
+		t.Fatal("TC-013-08: SPEC.md firecracker bullet does not state the microVM boots (task 015 truth missing)")
 	}
 	bullet := s[start:]
 	if end := strings.Index(bullet, "\n\n"); end >= 0 {
 		bullet = bullet[:end]
 	}
-	for _, bad := range []string{"will be wired", "will implement", "will be", "planned", "TODO", "future"} {
+	// No future-tense roadmap language in the firecracker bullet — the spec is a present-tense
+	// snapshot. Deferred work for later tasks is named as "remains … not done here" (present-tense
+	// boundary), never as a "will" promise.
+	for _, bad := range []string{"will be wired", "will implement", "will be", "planned", "TODO"} {
 		if strings.Contains(bullet, bad) {
-			t.Fatalf("TC-013-08: firecracker Non-goals bullet contains future-tense language %q; the spec is a present-tense snapshot", bad)
+			t.Fatalf("TC-013-08: firecracker bullet contains future-tense language %q; the spec is a present-tense snapshot", bad)
 		}
 	}
-	// The VMM launch is noted as not yet wired (present tense, not future promise).
-	if !strings.Contains(s, "not yet wired") {
-		t.Fatal("TC-013-08: SPEC.md does not state 'not yet wired' for VMM launch (present-tense boundary missing)")
+	// The old present-tense boundary ("VMM launch not yet wired") must be GONE now that it boots.
+	if strings.Contains(bullet, "not yet wired") {
+		t.Fatal("TC-013-08: SPEC.md still says the VMM launch is 'not yet wired' — task 015 boots the guest; update the spec")
 	}
 }
 

@@ -447,3 +447,37 @@ owns) and its assertion is **exercised in task 015's verification plan**.
   one new device permission (`/dev/kvm`) replaces "a privileged/root setup phase."
 - Task 018 owns an **additional** fitness rule (constraints ≥ jailer) beyond the no-NIC and
   cred-not-in-guest rules; task 015's verification plan exercises it. Task 015 is **unblocked**.
+
+## Amendment 2 (2026-06-20) — constraints ≥ jailer: how each property is OBSERVED host-side
+
+Discharging the A1.Q3 test obligation against the live firecracker child (TC-015-05) surfaced two
+points where the *observable* host-side reality differs from Amendment 1's shorthand. Recording them
+so the spec is "what is," not "what was assumed":
+
+1. **Non-host uid is observed via `/proc/<pid>/uid_map`, not `/proc/<pid>/status` Uid; and it
+   required a wrapper fix.** `bwrap --unshare-all` creates a new *user* namespace but, by default,
+   identity-maps the invoking host uid (1000 → 1000) — so the firecracker child appeared as the host
+   uid *inside* its namespace. That is weaker than a jailer's setuid-to-an-unprivileged-uid. The fix:
+   the Tier-3 wrapper now passes `--uid 65534 --gid 65534`, running the child as `nobody` inside its
+   userns (`firecracker.go`). The host-side proof is `/proc/<pid>/uid_map` = `"65534 <hostuid> 1"`
+   (in-namespace uid 65534 ≠ the invoking host uid). NOTE: `/proc/<pid>/status` Uid still reports the
+   **owning** host uid because the kernel translates a namespaced uid back through the uid_map for an
+   outside observer — so `uid_map`, not the status Uid line, is the load-bearing observable.
+
+2. **"cgroup limits applied" is realized as rlimits + CPU-affinity, plus an unshared cgroup
+   namespace — not per-run cgroup placement.** `limits.go` enforces resource caps via POSIX rlimits
+   (`prlimit` RLIMIT_AS/NPROC), `taskset` CPU affinity, and tmpfs sizing (ADR 003) — it does **not**
+   move the child into a bespoke limited cgroup the way the jailer does. What is host-observable on
+   the firecracker child is therefore: (a) the **cgroup *namespace*** is unshared (differs from the
+   host), and (b) the rlimit/affinity caps apply by inheritance. The jailer-equivalence holds (caps
+   are enforced; the child cannot see the host cgroup tree), but the mechanism is rlimits/affinity,
+   not cgroup-v2 controllers. TC-015-05 asserts the unshared cgroup namespace + the namespace/uid/
+   capability/pivot_root properties it *can* read straight from `/proc`, and does not assert a
+   per-run cgroup that this design does not create.
+
+The remaining constraints-≥-jailer properties are observed directly on the live child and bite if
+absent: **all 7 namespaces** (net/user/mnt/pid/ipc/uts/cgroup) differ from an unwrapped host
+process; **CapEff = 0** + **NoNewPrivs = 1** (privilege dropped, cannot be regained); the child's
+**root mount is a bwrap `pivot_root` tmpfs newroot** (`0:NNN /newroot`, fs `tmpfs`), not the host's
+real block-device `/`. The task-018 fitness rule consumes the same `assertConstraintsGEJailer`
+observation.

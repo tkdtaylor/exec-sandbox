@@ -22,6 +22,13 @@ import (
 )
 
 func main() {
+	// fc-launch is the internal in-bwrap launcher for the Firecracker Tier-3 backend (ADR 010
+	// A1.Q3): firecrackerBackend.Argv spawns `exec-sandbox fc-launch <bundle>` under bwrap. It drives
+	// the firecracker REST API and exits with the GUEST's exit code, so Run()'s host capture maps it
+	// unchanged. Not a public contract surface — it is the backend's own spawn target.
+	if len(os.Args) >= 2 && os.Args[1] == "fc-launch" {
+		os.Exit(fcLaunchMain(os.Args[2:]))
+	}
 	if len(os.Args) < 2 || os.Args[1] != "run" {
 		fmt.Fprintln(os.Stderr, "usage: exec-sandbox run   (JSON RunRequest on stdin)")
 		os.Exit(2)

@@ -22,8 +22,9 @@ exec-sandbox run     # reads a JSON RunRequest on stdin, writes a JSON result on
 
 | Subcommand / flag | Type | Default | Effect |
 |-------------------|------|---------|--------|
-| `run` | subcommand (positional, required) | — | The only subcommand. Reads a `RunRequest` from stdin, executes it, writes the result to stdout. |
-| stdin | JSON `RunRequest` | — | The request body (see [data-model.md](data-model.md)). |
+| `run` | subcommand (positional, required) | — | The public subcommand. Reads a `RunRequest` from stdin, executes it, writes the result to stdout. |
+| `fc-launch <bundle>` | subcommand (internal) | — | **Not a public surface.** The Firecracker backend re-execs the binary as `fc-launch <bundle>` (under `bwrap`) to drive the firecracker REST API and exit with the guest's exit code (B-015). Callers use `run`; `fc-launch` is the backend's own spawn target. |
+| stdin | JSON `RunRequest` | — | The request body for `run` (see [data-model.md](data-model.md)). |
 | stdout | JSON result | — | `{stdout, stderr, exit_code, sandbox_status}` or `{error}`. |
 
 There are no flags in v0 — all input is the stdin JSON.
