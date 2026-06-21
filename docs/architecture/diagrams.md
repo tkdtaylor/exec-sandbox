@@ -113,18 +113,18 @@ sequenceDiagram
     participant Run as exec-sandbox Run()
     participant Vault as vault
     participant Proxy as Egress proxy
-    participant Box as isolation sandbox (bwrap | runsc)
+    participant Sbx as isolation sandbox (bwrap or runsc)
     participant Audit as audit-trail
 
     Agent->>Run: RunRequest {payload, profile, tier, secret_refs} on stdin
-    Run->>Run: parse NetConnect allowlist + per-host verb sets; mint sandbox_identity
+    Run->>Run: parse NetConnect allowlist + per-host verb sets, mint sandbox_identity
     Run->>Audit: emit spawn {actor, action:spawn, target:sandbox_id, decision:allow}
     Run->>Run: snapshotBaseline → pristine baseline (work dir + payload.sh + fresh proxy, empty creds) [ADR 009]
     loop for each secret_ref handle
         Run->>Vault: vault.inject(handle, sandbox_identity, mode)
         alt proxy-mode success
             Vault-->>Run: {credential, binding:{host,header,scheme}}
-            Run->>Proxy: SetCredential(host, cred)  %% never enters sandbox
+            Run->>Proxy: SetCredential(host, cred) (never enters sandbox)
         else failure / deny
             Vault-->>Run: error
             Run->>Audit: emit inject_failed {decision:deny}
@@ -132,12 +132,12 @@ sequenceDiagram
     end
     Run->>Run: validateWorkdir(run.workdir) + validateFileReads(FileRead paths) (bad path → error, no run)
     Run->>Proxy: Start(proxy.sock)
-    Run->>Run: backendFor(tier) → bubblewrap | gvisor (unknown → error)
-    Run->>Box: exec backend (bwrap --unshare-all, or runsc over an OCI bundle; payload.sh + /proxy.sock bind-mounted, no network; run.workdir → /work rw cwd=/work; FileRead paths → ro mounts; run.env → PATH/env)
-    Box->>Proxy: outbound HTTP via /proxy.sock (only egress)
-    Proxy->>Proxy: host allowlist check, then per-host verb check (ADR 008); inject credential
-    Proxy-->>Box: forwarded response (or 403 blocked-by-allowlist / 403 blocked-by-method / 502 no-route)
-    Box-->>Run: stdout, stderr, exit_code
+    Run->>Run: backendFor(tier) → bubblewrap or gvisor (unknown → error)
+    Run->>Sbx: exec backend (bwrap --unshare-all, or runsc over an OCI bundle, payload.sh + /proxy.sock bind-mounted, no network, run.workdir → /work rw cwd=/work, FileRead paths → ro mounts, run.env → PATH/env)
+    Sbx->>Proxy: outbound HTTP via /proxy.sock (only egress)
+    Proxy->>Proxy: host allowlist check, then per-host verb check (ADR 008), inject credential
+    Proxy-->>Sbx: forwarded response (or 403 blocked-by-allowlist / 403 blocked-by-method / 502 no-route)
+    Sbx-->>Run: stdout, stderr, exit_code
     Run->>Audit: emit exit {action:exit, exit_code, duration_ms}
     Run->>Run: baseline.teardown() → RemoveAll(work) + Wipe() (one-shot terminal cleanup) [ADR 009]
     Run->>Proxy: Stop()
