@@ -1,7 +1,7 @@
 # Architecture Diagrams
 
 **Project:** exec-sandbox
-**Last updated:** 2026-06-20 (task 014: add the Firecracker backend + vsock-bridge/guest-shim components to the §3 component view; record the no-NIC + vsock egress flow as a third no-network enforcement point — B-014)
+**Last updated:** 2026-06-20 (task 015: Firecracker Tier-3 boots end-to-end — fc-launch drives the REST API + vendored pinned kernel/rootfs (fcartifacts.go) + direct firecracker under bwrap (no jailer); the VMM-launch boundary in the §3 view is removed — B-015)
 
 C4-structured Mermaid diagrams covering the system at progressively detailed levels (Context → Container → Component), plus the runtime sequence flow that shows how those pieces collaborate. See [overview.md](overview.md) for prose context, [decisions/](decisions/) for the ADRs referenced here, and [`../spec/architecture.md`](../spec/architecture.md) for the structured element catalog these diagrams render.
 
@@ -73,9 +73,9 @@ C4Component
     Container_Boundary(boundary, "exec-sandbox") {
         Component(main, "main", "main.go", "CLI entry: parse argv, read stdin RunRequest, call Run(), write result")
         Component(run, "Run()", "run.go", "Orchestration: allowlist parse, identity mint, audit emit, vault.inject loop, proxy start, backend exec, result assembly")
-        Component(seam, "backendFor / Backend", "run.go", "Tier seam: selects bubblewrapBackend (bwrapArgv) or gvisorBackend by run.tier; unknown tier → error")
+        Component(seam, "backendFor / Backend", "run.go", "Tier seam: selects bubblewrapBackend (bwrapArgv), gvisorBackend, or firecrackerBackend by run.tier; unknown tier → error")
         Component(gvisor, "gvisorBackend / gvisorOCISpec", "gvisor.go", "Builds an OCI bundle (empty netns, /proxy.sock only egress) and the runsc run argv")
-        Component(firecracker, "firecrackerBackend / firecrackerConfig", "firecracker.go", "Builds the microVM config (no network-interface key — no-NIC by omission) + vsock device; configHasNoNIC guard. VMM launch not yet wired (task 015)")
+        Component(firecracker, "firecrackerBackend / firecrackerConfig / fcLaunch", "firecracker.go / fclaunch.go / fcartifacts.go", "Verifies the pinned kernel+rootfs (sha256, fail-fast), builds the per-run bundle + payload drive, starts the vsock bridge, and launches firecracker DIRECTLY under bwrap --unshare-all (no jailer). fc-launch drives the REST API in order (no network-interfaces) and exits with the guest exit code; configHasNoNIC guard")
         Component(vsockbridge, "vsockBridge + guestShim", "vsockbridge.go / vsockshim.go", "Host bridge forwards the vsock uds_path to the live EgressProxy; dumb guest-side byte pump presents /proxy.sock in the microVM. No HTTP/secret/allowlist logic in the shim (B-014)")
         Component(ipc, "ipcCall / vaultInject / emit", "run.go", "Unix-socket JSON-lines IPC to vault and audit-trail")
         Component(snapshot, "sandboxBaseline / restore", "snapshot.go", "Snapshot/restore reset boundary: pristine per-run baseline, one-shot teardown, leak-proof restore (ADR 009)")
@@ -100,7 +100,7 @@ C4Component
 **Key contracts**
 - The sandbox has **no network namespace** regardless of tier (`bwrap --unshare-all`, the gVisor OCI spec's empty `network` namespace + `runsc --network=none`, or the Firecracker config's **absence of any `network-interface`** — no-NIC by omission); `/proxy.sock` is the only egress. Under Firecracker `/proxy.sock` is presented in the guest by the dumb vsock shim, whose host bridge forwards bytes to the same `EgressProxy` (B-014). (ADR-001 D3, ADR-002, ADR-010 D2)
 - exec-sandbox owns the network boundary + proxy + allowlist; vault owns credential injection. The proxy-mode credential **never** enters the sandbox — under Firecracker it is injected host-side **after** the vsock hop and never crosses into the guest. (ADR-001 D4/D5, ADR-010 D2)
-- The `tier` seam (`backendFor`) selects the isolation backend; bubblewrap (Tier 1) and gVisor (Tier 2) run end-to-end, Firecracker (Tier 3) dispatches to `firecrackerBackend` — the config generator + no-NIC + vsock-bridge egress are wired; the VMM launch (the booted guest) is the current boundary (task 015). (ADR-001 D7, ADR-002, ADR-010)
+- The `tier` seam (`backendFor`) selects the isolation backend; bubblewrap (Tier 1), gVisor (Tier 2), and Firecracker (Tier 3) all run end-to-end. Firecracker verifies the pinned kernel+rootfs (sha256, fail-fast), launches the VMM **directly under `bwrap --unshare-all`** (no jailer — A1.Q3), drives the REST API (machine-config → boot-source → drives → vsock → InstanceStart, no `network-interfaces`), and runs `/usr/bin/sh /payload.sh` in the booted guest; exit/timeout flow through the unchanged host capture. (ADR-001 D7, ADR-002, ADR-010 + Amendment 1)
 
 ---
 

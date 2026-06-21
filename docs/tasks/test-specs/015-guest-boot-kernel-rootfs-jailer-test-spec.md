@@ -194,13 +194,13 @@ Ground truth to mirror:
 ## Post-implementation verification
 
 - [x] **Q1 + Q3 resolved (ADR-010 Amendment 1, 2026-06-20)** — the unblock gate is cleared
-- [ ] TC-015-01..02: direct-firecracker (no jailer) argv under bwrap + bundle create/teardown
-- [ ] TC-015-03: REST PUT order correct, NO `network-interfaces` PUT
-- [ ] TC-015-04: guest boots, payload prints HELLO-FROM-GUEST, exit 0 (L5)
-- [ ] TC-015-05: firecracker's effective constraints ≥ jailer (no jailer; A1.Q3)
-- [ ] TC-015-06/08/09: exit-code mapping (0, non-zero, timeout=137) via the unchanged capture path
-- [ ] TC-015-07: kernel/rootfs pinned + sha256-verified, fails fast on mismatch (A1.Q1)
-- [ ] TC-015-10: missing firecracker / inaccessible kvm → exit 127, no fall-back
+- [x] TC-015-01..02: direct-firecracker (no jailer) argv under bwrap + bundle create/teardown — `TestFirecrackerArgvIsBwrapDirectNoJailer`, `TestFirecrackerBundleCreatedAndTornDown`
+- [x] TC-015-03: REST PUT order correct, NO `network-interfaces` PUT — `TestFirecrackerRESTOrderNoNIC`
+- [x] TC-015-04: guest boots, payload prints HELLO-FROM-GUEST, exit 0 (L5) — `TestFirecrackerGuestBoot_E2E` (real boot on `/dev/kvm`)
+- [x] TC-015-05: firecracker's effective constraints ≥ jailer (no jailer; A1.Q3) — `TestFirecrackerConstraintsGEJailer_Live` (guest `UID=0/NIC=absent/HOSTFS=isolated`) + `_Argv` (non-vacuous)
+- [x] TC-015-06/08/09: exit-code mapping (0, non-zero, timeout=137) via the unchanged capture path — `TestFirecrackerCleanExit_E2E`, `TestFirecrackerNonZeroExit_E2E` (exit 3), `TestFirecrackerTimeout_E2E` (1.066s → 137)
+- [x] TC-015-07: kernel/rootfs pinned + sha256-verified, fails fast on mismatch (A1.Q1) — `TestGuestArtifactsVerifyAndFailFast`, `TestGuestKernelProvenanceVendored`
+- [x] TC-015-10: missing firecracker / inaccessible kvm → exit 127, no fall-back — `TestFirecrackerMissingArtifactsIsHardError`, `TestFirecrackerRunMissingPrereqIsExit127`
 
 ## Test framework notes
 
