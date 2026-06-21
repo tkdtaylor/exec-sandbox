@@ -1,6 +1,6 @@
 # ADR 010 — Firecracker (microVM) Tier-3 backend behind the tier seam
 
-**Status:** accepted — the core decision (Option A: Firecracker behind the seam, no-NIC + vsock-bridged egress) is committed. Q1 (kernel/rootfs sourcing) + Q3 (jailer privilege model) are **resolved in Amendment 1 (2026-06-20)** — Q1: build `vmlinux` + Alpine RO rootfs from source as pinned build-time artifacts; Q3: **no jailer** — run `firecracker` directly under the existing unprivileged `bwrap --unshare-all` + `limits.go` model. Q2 (mount mechanism) is resolved in task 017; Q4 (vsock shim location) is resolved in task 014. The task decomposition (013–018) carries the work; see the coverage tracker for the dependency-ordered status.
+**Status:** accepted — the core decision (Option A: Firecracker behind the seam, no-NIC + vsock-bridged egress) is committed. Q1 (kernel/rootfs sourcing) + Q3 (jailer privilege model) are **resolved in Amendment 1 (2026-06-20)** — Q1: build `vmlinux` + Alpine RO rootfs from source as pinned build-time artifacts; Q3: **no jailer** — run `firecracker` directly under the existing unprivileged `bwrap --unshare-all` + `limits.go` model. Q2 (mount mechanism) is resolved in task 017; **Q4 (vsock shim location/lifecycle) is resolved in task 014 (2026-06-20)** — the shim ships in the read-only rootfs base, started by `/sbin/init` at boot, kept dumb by construction (see the Q4 resolution note below and `docs/spec/behaviors.md` B-014). The task decomposition (013–018) carries the work; see the coverage tracker for the dependency-ordered status.
 **Date:** 2026-06-20 (accepted 2026-06-20)
 **Related:** ADR 001 D7 (tier seam: `bubblewrap | gvisor | firecracker`), ADR 002 (gVisor Tier-2
 backend — the OCI bundle/spec pattern this ADR extends), ADR 006 (hyperlight Tier-4 watching
@@ -314,9 +314,17 @@ implementation (likely in the first task or a follow-up ADR amendment):
   expects specific chroot/cgroup/uid setup and often elevated setup privileges; how that reconciles
   with exec-sandbox's unprivileged (`--rootless`-style) operation on hosts where the namespace tiers
   run unprivileged is unresolved. May constrain which hosts can run Tier-3.
-- **Q4 — vsock shim location and lifecycle.** Whether the guest-side `/proxy.sock` shim ships inside
-  the rootfs image, is injected at boot, or is the guest `init` itself — and how its dumbness is
-  audited — is a design choice for the egress task.
+- **Q4 — vsock shim location and lifecycle (RESOLVED).** **Resolved in task 014 (2026-06-20).** The
+  guest-side `/proxy.sock` shim **ships baked into the read-only rootfs base** as part of the TCB
+  (consistent with A1.Q1: the pinned RO Alpine base carries only `/sbin/init` plus this trusted
+  forwarder) and is **started by `/sbin/init` at boot**. It is kept **dumb by construction** — a
+  bidirectional byte pump (`vsockshim.go`) that imports no HTTP package and holds no host set,
+  method map, or secret — and its dumbness is an **auditable property** asserted by a source-level
+  test (`TestShimHasNoHTTPNoCredNoAllowlist`). The host side of the vsock terminates at the host
+  bridge (`startVsockBridge`), which forwards bytes to the live `EgressProxy` unchanged; the
+  credential is injected host-side after the vsock hop and never enters the guest. The current truth
+  is recorded present-tense in `docs/spec/behaviors.md` **B-014** (the microVM egress flow); see that
+  behavior for the authoritative description.
 
 ## Amendment 1 (2026-06-20) — Q1 + Q3 resolved
 
