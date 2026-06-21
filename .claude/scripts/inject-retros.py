@@ -100,11 +100,12 @@ def main():
     if not project.is_dir():
         sys.exit(0)
 
-    # Look for retros in CLAUDE.md and also in docs/architecture/agent-rules.md
-    # (the latter is where projects move retros once CLAUDE.md gets too large).
+    # Look for retros in the canonical AGENTS.md briefing, the Claude-specific
+    # CLAUDE.md layer, and the full retro log at docs/agent-rules.md.
     sources = [
+        project / "AGENTS.md",
         project / "CLAUDE.md",
-        project / "docs" / "architecture" / "agent-rules.md",
+        project / "docs" / "agent-rules.md",
     ]
 
     retros: list[tuple[str, str]] = []
