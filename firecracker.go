@@ -135,6 +135,15 @@ func firecrackerArgv(bundle string, art guestArtifacts, lim Limits) ([]string, e
 
 	argv := []string{"bwrap",
 		"--unshare-all", "--die-with-parent",
+		// Non-host uid (A1.Q3, jailer-equivalent identity): --unshare-all creates a new user
+		// namespace; --uid/--gid run the firecracker child as an unprivileged 65534 (nobody) INSIDE
+		// that namespace — the no-jailer analogue of the jailer's setuid-to-an-unprivileged-uid step.
+		// The host-side observable is /proc/<pid>/uid_map "65534 <hostuid> 1" (the in-namespace uid is
+		// 65534, not the invoking host uid); the kernel still reports the OWNING host uid in
+		// /proc/<pid>/status Uid, so the uid_map — not the status Uid — is what proves the non-host
+		// identity (see TC-015-05). /dev/kvm stays reachable: the dev-bind owner maps to nobody in the
+		// userns and the device is mode rw for it.
+		"--uid", "65534", "--gid", "65534",
 		"--ro-bind", "/usr", "/usr",
 		"--ro-bind", "/etc", "/etc",
 		"--proc", "/proc",
