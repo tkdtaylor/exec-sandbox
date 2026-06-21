@@ -91,15 +91,31 @@ The seam keeps the `run()` contract stable across tiers.
   for agent-generated code.
 - **No persistent state** — every run is ephemeral (fresh temp dir, fresh proxy, wiped at
   teardown).
-- **Tier 3 Firecracker microVM boots and runs the payload** — `firecracker` dispatches to
-  `firecrackerBackend` (ADR 010 D1), which verifies the pinned guest kernel + rootfs by sha256
-  (fail-fast on mismatch — A1.Q1), builds a per-run bundle, starts the host-side vsock egress
-  bridge, and launches `firecracker` **directly** under the unprivileged `bwrap --unshare-all` +
-  `limits.go` wrapper (**no jailer** — A1.Q3). The launcher drives the REST API in order
+- **VMM-native snapshot/restore and warm-pool reuse are out of scope** — the Firecracker tier does a
+  one-shot teardown only (terminate the microVM, reclaim the per-run bundle, reap any surviving
+  firecracker process). It does **not** use Firecracker's native VM snapshot/resume to keep a warm
+  guest across runs; that is a separate future decision (ADR 010 D6). The host-side baseline reset
+  (ADR 009, `snapshot.go`) is tier-independent and unchanged — it resets the host work dir,
+  `payload.sh`, and the proxy credential map, not the guest.
+
+The Tier-3 Firecracker capability is **wired**, not a non-goal — it lives under "What it is" above and
+in the invariants:
+
+- **Tier 3 Firecracker microVM boots, runs the payload, and tears down on every exit path** —
+  `firecracker` dispatches to `firecrackerBackend` (ADR 010 D1), which verifies the pinned guest
+  kernel + rootfs by sha256 (fail-fast on mismatch — A1.Q1), builds a per-run bundle, starts the
+  host-side vsock egress bridge, and launches `firecracker` **directly** under the unprivileged
+  `bwrap --unshare-all` + `limits.go` wrapper (**no jailer** — A1.Q3; the bwrap child supplies the
+  chroot + all-namespaces-unshared + non-host-uid the jailer would otherwise provide, constraints
+  asserted ≥ jailer by `fitness-constraints-ge-jailer`). The launcher drives the REST API in order
   (machine-config → boot-source → drives → vsock → `InstanceStart`) with no `network-interface`
-  key/PUT (no-NIC by omission, D2), the guest runs `/usr/bin/sh /payload.sh`, and stdout/exit flow
-  through the unchanged host-side capture path. (What remains for later tasks — not done here — is
-  the `limits` → machine-config mapping semantics (task 016), `/work`/FileRead presentation in the
-  guest (task 017), and the teardown-reclaim + constraints-≥-jailer fitness umbrella (task 018).)
-  Tier-1 (`bubblewrap`), Tier-2 (`gvisor`), and Tier-3 (`firecracker`) backends are all dispatched
-  by `backendFor`.
+  key/PUT (no-NIC by omission, D2; `fitness-no-nic`), the guest runs `/usr/bin/sh /payload.sh`, egress
+  crosses the vsock to the host-side `EgressProxy` (the credential is injected host-side after the
+  vsock hop and never enters the guest — D2, `fitness-cred-not-in-guest`), and stdout/exit flow
+  through the unchanged host-side capture path. `limits` map onto machine-config + in-guest rlimits
+  (task 016); `/work` is a writable block-device drive and FileRead paths read-only drives (task 017).
+  At run end the backend `cleanup` func (on the `defer` path in `Run()`) copies `/work` writes back,
+  stops the vsock bridge, reaps any surviving firecracker process scoped to this run's bundle, and
+  removes the bundle — so no guest, socket, or bundle outlives the run, on the clean, non-zero,
+  timeout, and launch-error paths alike. Tier-1 (`bubblewrap`), Tier-2 (`gvisor`), and Tier-3
+  (`firecracker`) backends are all dispatched by `backendFor`.
