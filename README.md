@@ -1,10 +1,6 @@
 # exec-sandbox — OS execution isolation with tiered, risk-selected runtimes
 
-Answers one question: *when agent-generated code runs, is its execution boundary isolated
-from the host and from other sandboxes?* exec-sandbox runs the code in a sandbox with **no
-network**, and its **only** path out is a host-side egress proxy with a domain allowlist.
-`vault` plugs credential injection into that proxy — in proxy mode the secret never enters
-the sandbox at all.
+Answers one question: *when agent-generated code runs, is its execution boundary isolated from the host and from other sandboxes?* exec-sandbox runs the code in a sandbox with **no network**, and its **only** path out is a host-side egress proxy with a domain allowlist. `vault` plugs credential injection into that proxy — in proxy mode the secret never enters the sandbox at all.
 
 - **Tiered isolation** — Tier-1 `bwrap --unshare-all` (no network namespace; a direct connect returns curl `000`) and Tier-2 gVisor/`runsc` over a generated OCI bundle, selected per run by `tier` (ADR 002)
 - **exec-sandbox owns the network boundary** — `--network none` + egress proxy (Unix socket) + domain allowlist, narrowed by an optional **per-host HTTP-verb allowlist** (ADR 008)
@@ -48,19 +44,18 @@ echo '{"run":{"payload":"…","profile":{…},"tier":"bubblewrap","secret_refs":
   | ./bin/exec-sandbox run
 ```
 
+## Documentation
+
+- [docs/architecture/overview.md](docs/architecture/overview.md) — system design and design principles
+- [docs/architecture/diagrams.md](docs/architecture/diagrams.md) — C4 diagrams and runtime flows
+- [docs/spec/SPEC.md](docs/spec/SPEC.md) — authoritative spec
+- [docs/plans/roadmap.md](docs/plans/roadmap.md) — roadmap and current status
+
 ## Status
 
-🚧 **v0 implementation, v1 contract.** Working Tier-1 bubblewrap **and** Tier-2 gVisor/`runsc`
-isolation behind the OCI seam + Unix-socket egress proxy + domain allowlist + per-host verb
-allowlist + per-run resource limits (cpu/mem/pids/disk/timeout/output) + writable `/work`,
-read-only `FileRead` mounts, env provisioning + snapshot/restore reset + vault.inject (proxy
-mode) + audit emission (ported from the tracer-bullet).
-**Filed (backlog):** Tier 3 Firecracker behind the OCI seam (tasks 013–018, ADR-010), full
-seccomp profile (task 019), env-mode injection + wipe clock (task 012), sandbox_identity
-attestation signatures (task 011). **Known egress gap:** HTTPS via `CONNECT` (host allowlist
-preserved; credential injection N/A once the client TLS-terminates) — deferred until an
-HTTPS-origin workload needs it. SOCKS5 and the two-layer network filter were **evaluated and
-rejected** (ADR-011). See [docs/CONTRACT.md](docs/CONTRACT.md).
+🚧 **v0 implementation, v1 contract.** Working Tier-1 bubblewrap **and** Tier-2 gVisor/`runsc` isolation behind the OCI seam + Unix-socket egress proxy + domain allowlist + per-host verb allowlist + per-run resource limits (cpu/mem/pids/disk/timeout/output) + writable `/work`, read-only `FileRead` mounts, env provisioning + snapshot/restore reset + vault.inject (proxy mode) + audit emission (ported from the tracer-bullet).
+
+See the [roadmap](docs/plans/roadmap.md) for filed/deferred work and known gaps. See also [docs/CONTRACT.md](docs/CONTRACT.md).
 
 ## Adapter seam & standards
 
