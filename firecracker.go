@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 // firecrackerBackend is the Tier-3 isolation substrate: it runs the payload inside a Firecracker
@@ -73,10 +74,24 @@ func (firecrackerBackend) Argv(scriptPath, proxySock, workdir string, fileReads 
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
-	// cleanup is enriched below with the bridge stop and the /work copy-out; it always removes the
-	// bundle last. workImage / workHostDir are set once the writable /work drive is built (below); the
-	// copy-out (debugfs rdump, unprivileged) runs in cleanup AFTER the guest has exited so the guest's
-	// writes land back in the host workdir (ADR 004 persist semantics, at teardown — ADR 010 Q2).
+	// cleanup is the Tier-3 TEARDOWN (ADR 010 D5), run on the existing `defer cleanup()` path in Run()
+	// so it fires on EVERY exit path — clean, non-zero, timeout, AND launch error. It (1) copies the
+	// guest's /work writes back to the host (debugfs rdump, unprivileged — ADR 010 Q2), (2) stops the
+	// host-side vsock bridge so no socket outlives the run, (3) DEFENSIVELY reaps any surviving
+	// firecracker/fc-launch process for THIS run, and (4) removes the per-run bundle dir LAST so no
+	// guest, socket, cgroup artifact, or bundle outlives the run.
+	//
+	// The reap is belt-and-suspenders: on the clean/non-zero/timeout paths the firecracker child is
+	// already dead — fc-launch is the spawned child, it runs firecracker under bwrap --die-with-parent,
+	// and Run() SIGKILLs the whole process group on the wall-clock deadline — but an orphan (e.g. a
+	// firecracker that outlived a crashed fc-launch) is killed here, scoped to this run's bundle so a
+	// concurrent run's child is never touched. The microVM owns no host cgroup (limits.go applies the
+	// rlimits/affinity to the bwrap child, and the vcpu/mem caps are firecracker machine-config), so
+	// there is no per-run jailer cgroup to reclaim under the no-jailer model (A1.Q3) — reaping the
+	// process group + removing the bundle is the complete reclaim.
+	//
+	// workImage / workHostDir are set once the writable /work drive is built (below); the copy-out runs
+	// AFTER the guest has exited so the guest's writes land back in the host workdir.
 	var bridge *vsockBridge
 	var workImage, workHostDir string
 	cleanup := func() {
@@ -86,6 +101,7 @@ func (firecrackerBackend) Argv(scriptPath, proxySock, workdir string, fileReads 
 		if bridge != nil {
 			bridge.Stop()
 		}
+		reapFirecrackerOrphans(bundle)
 		os.RemoveAll(bundle)
 	}
 
@@ -532,6 +548,53 @@ func copyOutWorkdir(image, hostDir string) {
 			continue // ext4 metadata dir, not a guest write
 		}
 		_ = copyTree(filepath.Join(staging, e.Name()), filepath.Join(hostDir, e.Name()))
+	}
+}
+
+// reapFirecrackerOrphans is the defensive half of the Tier-3 teardown (ADR 010 D5): it SIGKILLs any
+// LIVE process whose argv references this run's bundle dir — a firecracker VMM (its --api-sock and
+// vsock paths live in the bundle) or an exec-sandbox fc-launch driving it. On the normal exit paths
+// the child is already dead (fc-launch is the spawned child; firecracker runs under
+// bwrap --die-with-parent; Run() SIGKILLs the process group on timeout), so this is belt-and-
+// suspenders for an orphan that outlived a crashed launcher — no firecracker process may outlive the
+// run.
+//
+// The match is SCOPED to this run's bundle path (a per-run MkdirTemp dir, unique to this run), NOT a
+// broad pkill of "firecracker": a concurrent run's child references a DIFFERENT bundle and is never
+// touched. bundle must be a non-empty, absolute per-run dir; an empty/"/" bundle is refused so a
+// degenerate call can never match every process.
+func reapFirecrackerOrphans(bundle string) {
+	if bundle == "" || bundle == "/" || !filepath.IsAbs(bundle) {
+		return // never reap on a degenerate bundle path — scope-safety over completeness
+	}
+	self := os.Getpid()
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if name == "" || name[0] < '0' || name[0] > '9' {
+			continue
+		}
+		pid, err := strconv.Atoi(name)
+		if err != nil || pid == self {
+			continue
+		}
+		cmdline, err := os.ReadFile(filepath.Join("/proc", name, "cmdline"))
+		if err != nil {
+			continue
+		}
+		// /proc/<pid>/cmdline is NUL-separated; join with spaces to substring-scan for the bundle path.
+		joined := strings.ReplaceAll(string(cmdline), "\x00", " ")
+		if !strings.Contains(joined, bundle) {
+			continue
+		}
+		// A process whose argv references THIS run's bundle is a survivor (the firecracker VMM with its
+		// --api-sock/vsock under the bundle, or the fc-launch driving it). SIGKILL it — it must not
+		// outlive the run. A kill failure (already-exited / race) is ignored; the RemoveAll that follows
+		// is the load-bearing reclaim and the survivor probe re-checks.
+		_ = syscall.Kill(pid, syscall.SIGKILL)
 	}
 }
 
