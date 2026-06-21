@@ -1,7 +1,7 @@
 # Architecture Diagrams
 
 **Project:** exec-sandbox
-**Last updated:** 2026-06-20 (task 015: Firecracker Tier-3 boots end-to-end — fc-launch drives the REST API + vendored pinned kernel/rootfs (fcartifacts.go) + direct firecracker under bwrap (no jailer); the VMM-launch boundary in the §3 view is removed — B-015)
+**Last updated:** 2026-06-21 (task 017: Firecracker `/work` + FileRead presented as ext4 block-device drives — writable `/work` (`/dev/vdc`, copy-in via `mkfs.ext4 -d`, copy-out at teardown via `debugfs`), read-only FileRead (`/dev/vdd…`); single-writable-drive guard; no NIC re-asserted — B-016) — task 015: Firecracker Tier-3 boots end-to-end — fc-launch drives the REST API + vendored pinned kernel/rootfs (fcartifacts.go) + direct firecracker under bwrap (no jailer); the VMM-launch boundary in the §3 view is removed — B-015)
 
 C4-structured Mermaid diagrams covering the system at progressively detailed levels (Context → Container → Component), plus the runtime sequence flow that shows how those pieces collaborate. See [overview.md](overview.md) for prose context, [decisions/](decisions/) for the ADRs referenced here, and [`../spec/architecture.md`](../spec/architecture.md) for the structured element catalog these diagrams render.
 
@@ -75,7 +75,7 @@ C4Component
         Component(run, "Run()", "run.go", "Orchestration: allowlist parse, identity mint, audit emit, vault.inject loop, proxy start, backend exec, result assembly")
         Component(seam, "backendFor / Backend", "run.go", "Tier seam: selects bubblewrapBackend (bwrapArgv), gvisorBackend, or firecrackerBackend by run.tier; unknown tier → error")
         Component(gvisor, "gvisorBackend / gvisorOCISpec", "gvisor.go", "Builds an OCI bundle (empty netns, /proxy.sock only egress) and the runsc run argv")
-        Component(firecracker, "firecrackerBackend / firecrackerConfig / fcLaunch", "firecracker.go / fclaunch.go / fcartifacts.go", "Verifies the pinned kernel+rootfs (sha256, fail-fast), builds the per-run bundle + payload drive, starts the vsock bridge, and launches firecracker DIRECTLY under bwrap --unshare-all (no jailer). fc-launch drives the REST API in order (no network-interfaces) and exits with the guest exit code; configHasNoNIC guard")
+        Component(firecracker, "firecrackerBackend / firecrackerConfig / fcLaunch", "firecracker.go / fclaunch.go / fcartifacts.go", "Verifies the pinned kernel+rootfs (sha256, fail-fast), builds the per-run bundle + payload drive + writable /work drive (/dev/vdc, copy-in mkfs.ext4 -d, copy-out at teardown via debugfs) + read-only FileRead drives (/dev/vdd…); validateDriveReadOnly guards exactly one writable drive. Starts the vsock bridge, launches firecracker DIRECTLY under bwrap --unshare-all (no jailer). fc-launch drives the REST API in order (no network-interfaces) and exits with the guest exit code; configHasNoNIC guard")
         Component(vsockbridge, "vsockBridge + guestShim", "vsockbridge.go / vsockshim.go", "Host bridge forwards the vsock uds_path to the live EgressProxy; dumb guest-side byte pump presents /proxy.sock in the microVM. No HTTP/secret/allowlist logic in the shim (B-014)")
         Component(ipc, "ipcCall / vaultInject / emit", "run.go", "Unix-socket JSON-lines IPC to vault and audit-trail")
         Component(snapshot, "sandboxBaseline / restore", "snapshot.go", "Snapshot/restore reset boundary: pristine per-run baseline, one-shot teardown, leak-proof restore (ADR 009)")

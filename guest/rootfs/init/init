@@ -44,6 +44,69 @@ if [ -b /dev/vdb ]; then
 	fi
 fi
 
+# /work is the SINGLE writable surface (ADR 004 / F-006), presented on /dev/vdc — a writable ext4
+# drive the host seeds from run.workdir (copy-in) and copies back at teardown (debugfs copy-out,
+# unprivileged; ADR 010 Q2). Mount it READ-WRITE at /work; the payload's cwd is /work (set on the
+# exec below) so a bare `out.txt` write lands on the writable surface and persists to the host
+# workdir. When no /work drive is present (run.workdir == "") the mount is simply skipped and the
+# payload runs from /run/payload as before — byte-for-byte the task-015 boot shape.
+# /work exists in the read-only base as an empty mountpoint (build.sh creates it) — init cannot mkdir
+# it at boot since the root is read-only.
+WORKDIR=""
+if [ -b /dev/vdc ]; then
+	if mount /dev/vdc /work 2>/dev/null; then
+		WORKDIR=/work
+	fi
+fi
+
+# FileRead surfaces (ADR 005 / F-007): each validated FileRead path is a SEPARATE read-only ext4
+# drive (/dev/vdd, /dev/vde, …); the host emits the device->mountpoint mapping on the trusted kernel
+# cmdline as `exec_sandbox.fileread=/dev/vdd:/host/path,...`. Mount each device READ-ONLY and expose
+# its single seeded entry at the SAME absolute host path the payload would use (mirroring bwrap's
+# --ro-bind <p> <p>). A guest write fails (the drive is read-only at the virtio layer) and the host
+# file is never touched. Absent arg => no FileRead mounts (the "zero = nothing" contract).
+FILEREAD=""
+for tok in $(cat /proc/cmdline 2>/dev/null); do
+	case "$tok" in
+		exec_sandbox.fileread=*) FILEREAD="${tok#exec_sandbox.fileread=}" ;;
+	esac
+done
+if [ -n "$FILEREAD" ]; then
+	OLDIFS="$IFS"
+	IFS=','
+	for pair in $FILEREAD; do
+		dev="${pair%%:*}"
+		dst="${pair#*:}"
+		# Skip malformed pairs (no device or no path).
+		[ -n "$dev" ] && [ -n "$dst" ] || continue
+		[ -b "$dev" ] || continue
+		# Mount the read-only drive on a tmpfs-backed staging mountpoint (the root is read-only, so the
+		# staging point lives under /run). The drive is is_read_only:true at the virtio layer, so a
+		# write to anything it backs fails regardless of the mount flags (F-007 enforced structurally).
+		mp="/run/fileread${dst}"
+		mkdir -p "$mp" 2>/dev/null
+		mount -o ro "$dev" "$mp" 2>/dev/null || continue
+		base="${dst##*/}"
+		parent="${dst%/*}"
+		[ -n "$parent" ] || parent=/
+		# Recreate the host path inside the guest. Parents under a tmpfs (/tmp, /run) or an existing
+		# rootfs dir are creatable; mkdir best-efforts otherwise. The seeded entry is then bind-mounted
+		# (read-only) onto the host path so the payload reads it at the SAME absolute path it would on
+		# the host (mirroring bwrap --ro-bind <p> <p>).
+		mkdir -p "$parent" 2>/dev/null
+		if [ -d "$mp/$base" ]; then
+			mkdir -p "$dst" 2>/dev/null
+			mount --bind "$mp/$base" "$dst" 2>/dev/null
+			mount -o remount,ro,bind "$dst" 2>/dev/null
+		elif [ -f "$mp/$base" ]; then
+			: > "$dst" 2>/dev/null
+			mount --bind "$mp/$base" "$dst" 2>/dev/null
+			mount -o remount,ro,bind "$dst" 2>/dev/null
+		fi
+	done
+	IFS="$OLDIFS"
+fi
+
 # pids -> in-guest RLIMIT_NPROC. The host emits `exec_sandbox.nproc=N` on the kernel cmdline (only
 # when profile.limits.pids > 0); parse it here and apply it as an RLIMIT_NPROC ceiling BEFORE running
 # the payload, so a fork bomb in the payload hits the cap. The guest owns its own pid space, so this
@@ -76,6 +139,16 @@ esac
 # byte-for-byte the prior boot, so the egress/boot E2E tests are unchanged.
 # /usr/bin/setpriv is the util-linux binary (supports --reuid/--regid/--clear-groups); the busybox
 # applet at /bin/setpriv does NOT, so the absolute path is used to bypass PATH (which has /bin first).
+# cwd: when a /work surface is present the payload runs FROM /work (cwd=/work), so a bare relative
+# write (`echo > out.txt`) lands on the single writable surface and persists to the host workdir
+# (ADR 004). When 65534 owns the run (NPROC path) /work must be writable by that uid, so it is made
+# world-writable first (the drive is per-run and discarded after copy-out). With no /work surface the
+# cwd is left at / as before.
+if [ -n "$WORKDIR" ]; then
+	chmod 0777 /work 2>/dev/null
+	cd /work 2>/dev/null
+fi
+
 if [ -n "$NPROC" ] && [ -x /usr/bin/setpriv ]; then
 	chmod 0777 /run 2>/dev/null
 	ulimit -u "$NPROC" 2>/dev/null

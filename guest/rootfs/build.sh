@@ -49,8 +49,10 @@ install -m 0755 "$HERE/init/init" "$work/rootfs/sbin/init"
 # Ensure /usr/bin/sh resolves (Alpine ships /bin/sh -> busybox; the payload entry is /usr/bin/sh).
 mkdir -p "$work/rootfs/usr/bin"
 ln -sf /bin/busybox "$work/rootfs/usr/bin/sh"
-# A few mount points init relies on.
-mkdir -p "$work/rootfs/proc" "$work/rootfs/sys" "$work/rootfs/dev" "$work/rootfs/tmp" "$work/rootfs/run"
+# A few mount points init relies on. /work is the writable single-writable-surface mountpoint (task
+# 017): the read-only root cannot have init mkdir it at boot, so it must exist in the base as an
+# empty directory for `mount /dev/vdc /work` to land on.
+mkdir -p "$work/rootfs/proc" "$work/rootfs/sys" "$work/rootfs/dev" "$work/rootfs/tmp" "$work/rootfs/run" "$work/rootfs/work"
 # The read-only root cannot host a live socket; init mounts a tmpfs at /run and the shim listens on
 # /run/proxy.sock. /proxy.sock is a symlink to it so the payload's cross-tier contract (always talk
 # to /proxy.sock) is preserved.

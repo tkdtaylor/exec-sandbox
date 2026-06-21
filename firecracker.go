@@ -39,6 +39,31 @@ type firecrackerBackend struct{}
 // boot, not the untrusted payload drive). Must match the key the init scans for.
 const guestNprocBootArg = "exec_sandbox.nproc"
 
+// guestFileReadBootArg is the kernel-cmdline key the host emits to tell the guest init which block
+// device backs each read-only FileRead surface and where to mount it. The value is a
+// comma-separated list of `<dev>:<hostpath>` pairs, e.g.
+// `exec_sandbox.fileread=/dev/vdd:/host/tool,/dev/vde:/host/lib`. The init mounts each device
+// READ-ONLY (`mount -o ro`) at its host path inside the guest, so a FileRead path is visible at the
+// SAME absolute path the payload would use on the host (mirroring bwrap's --ro-bind <p> <p>). It
+// rides the cmdline (the trusted, verified boot channel — like guestNprocBootArg) rather than the
+// untrusted payload drive: the host, not the payload, decides the mount topology. The drives
+// themselves carry is_read_only:true so the read-only-ness is enforced structurally by the virtio
+// block layer even if a guest tried to remount; the cmdline only carries the mountpoint mapping.
+const guestFileReadBootArg = "exec_sandbox.fileread"
+
+// workDriveID / workGuestDev: /work is presented as the writable block device vdc (the third drive,
+// after vda=rootfs and vdb=payload). The guest init mounts it READ-WRITE at /work and cd's there
+// before running the payload. It is the SINGLE writable surface (F-006): the rootfs and payload
+// drives are is_read_only:true, and every FileRead drive is is_read_only:true; only this drive is
+// is_read_only:false (ADR 004). Writes land in the ext4 image and are copied back to the host
+// workdir at TEARDOWN via debugfs (copy-out), so ADR 004's "writes persist to the host work dir" is
+// satisfied with persist-at-teardown timing, not live (ADR 010 Q2: block device, unprivileged
+// copy-in via mkfs.ext4 -d + copy-out via debugfs rdump — no root loop-mount).
+const (
+	workDriveID  = "work"
+	workGuestDev = "/dev/vdc"
+)
+
 // Argv verifies the pinned guest artifacts, builds the per-run bundle, starts the host-side vsock
 // bridge, and returns the bwrap-wrapped `exec-sandbox fc-launch <bundle>` argv plus a cleanup that
 // stops the bridge and removes the bundle. A missing/unverifiable artifact, a missing /dev/kvm, or
@@ -48,9 +73,16 @@ func (firecrackerBackend) Argv(scriptPath, proxySock, workdir string, fileReads 
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
-	// cleanup is enriched below with the bridge stop; it always removes the bundle last.
+	// cleanup is enriched below with the bridge stop and the /work copy-out; it always removes the
+	// bundle last. workImage / workHostDir are set once the writable /work drive is built (below); the
+	// copy-out (debugfs rdump, unprivileged) runs in cleanup AFTER the guest has exited so the guest's
+	// writes land back in the host workdir (ADR 004 persist semantics, at teardown — ADR 010 Q2).
 	var bridge *vsockBridge
+	var workImage, workHostDir string
 	cleanup := func() {
+		if workImage != "" && workHostDir != "" {
+			copyOutWorkdir(workImage, workHostDir)
+		}
 		if bridge != nil {
 			bridge.Stop()
 		}
@@ -99,6 +131,42 @@ func (firecrackerBackend) Argv(scriptPath, proxySock, workdir string, fileReads 
 
 	cfg := firecrackerConfig(art.kernelPath, art.rootfsPath, scriptPath, vsockUDS, lim)
 	addPayloadDrive(cfg, payloadDrive)
+
+	// Present the validated run.workdir as the writable /work block device (vdc, is_read_only:false)
+	// — the SINGLE writable surface (ADR 004 / F-006). The image is seeded from the host workdir
+	// (copy-in via mkfs.ext4 -d, unprivileged) so a host-seeded /work file is readable in-guest; the
+	// guest's writes are copied back to the host workdir at teardown (debugfs, in cleanup). When
+	// workdir is "" (no mount requested) no /work drive is added — byte-for-byte the task-015 shape.
+	if workdir != "" {
+		workImage = filepath.Join(bundle, "work.ext4")
+		workHostDir = workdir
+		if err := buildWorkdirDrive(workdir, workImage, diskMB); err != nil {
+			cleanup()
+			return nil, nil, nil, nil, err
+		}
+		addWorkdirDrive(cfg, workImage)
+	}
+
+	// Present each validated FileRead path as its own READ-ONLY block device (vdd, vde, …,
+	// is_read_only:true). The image is seeded from the host path (copy-in); the guest init mounts it
+	// read-only at the SAME absolute path (mirroring bwrap's --ro-bind <p> <p>). A guest write fails
+	// (the drive is read-only at the virtio layer) and the HOST file is never modified or created —
+	// there is NO copy-out for FileRead drives (ADR 005 / F-007). The device→mountpoint mapping is
+	// emitted on the trusted kernel cmdline (guestFileReadBootArg).
+	if err := addFileReadDrives(cfg, fileReads); err != nil {
+		cleanup()
+		return nil, nil, nil, nil, err
+	}
+
+	// Config-level read-only guard (TC-017-06/07): exactly one writable drive (the /work surface), and
+	// every FileRead drive carries is_read_only:true. A FileRead surface accidentally made writable is
+	// a hard error here — the negative case proving the single-writable-surface invariant is enforced
+	// structurally, not just by convention.
+	if err := validateDriveReadOnly(cfg, fileReads); err != nil {
+		cleanup()
+		return nil, nil, nil, nil, err
+	}
+
 	b, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		cleanup()
@@ -211,6 +279,260 @@ func addPayloadDrive(cfg map[string]any, payloadDrive string) {
 		"is_root_device": false,
 		"is_read_only":   true,
 	})
+}
+
+// addWorkdirDrive appends the writable /work drive (vdc) to the config's drives list. It is the
+// SINGLE writable drive (is_read_only:false) — the microVM analogue of bwrap's --bind workdir /work
+// (ADR 004 / F-006). is_root_device=false; the guest init mounts it READ-WRITE at /work and cd's
+// there before the payload.
+func addWorkdirDrive(cfg map[string]any, workImage string) {
+	drives, _ := cfg["drives"].([]map[string]any)
+	cfg["drives"] = append(drives, map[string]any{
+		"drive_id":       workDriveID,
+		"path_on_host":   workImage,
+		"is_root_device": false,
+		"is_read_only":   false,
+	})
+}
+
+// fileReadDriveID returns the firecracker drive_id for the i-th FileRead drive. Firecracker requires
+// drive IDs to be alphanumeric + underscore ONLY (a hyphen is rejected with a 400 at the REST PUT),
+// so the id uses an underscore: fileread_0, fileread_1, … The drive_id is distinct from the image
+// FILENAME (which may use a hyphen — it is a host path, not an API resource id).
+func fileReadDriveID(i int) string {
+	return fmt.Sprintf("fileread_%d", i)
+}
+
+// fileReadGuestDev returns the guest block-device path for the i-th FileRead drive. FileRead drives
+// follow vda(root), vdb(payload), vdc(/work): the first FileRead is vdd, the second vde, and so on.
+// The mapping is deterministic in the FileRead path order so the cmdline and the drive list agree.
+func fileReadGuestDev(i int) string {
+	// 'd' is vdd (index 0); 'e' vde (1); … virtio enumerates drives in config order.
+	return "/dev/vd" + string(rune('d'+i))
+}
+
+// addFileReadDrives appends one READ-ONLY drive per validated FileRead path (vdd, vde, …,
+// is_read_only:true) seeded from the host path, and emits the device→mountpoint mapping on the
+// kernel cmdline (guestFileReadBootArg) so the guest init mounts each one read-only at its host
+// path. The images are written into the same bundle dir as the /work + payload drives — the build
+// happens here so a mkfs failure surfaces as a spawn error. A FileRead path that cannot be imaged is
+// a hard error (the guest would otherwise run with the path silently absent — the no-silent-skip
+// stance of ADR 005). NO copy-out is wired for these drives: a guest write fails at the virtio layer
+// and the host file is untouched (F-007).
+func addFileReadDrives(cfg map[string]any, fileReads []string) error {
+	if len(fileReads) == 0 {
+		return nil
+	}
+	drives, _ := cfg["drives"].([]map[string]any)
+	var mapping []string
+	for i, p := range fileReads {
+		// The image lives next to the other per-run drives (path_on_host of the root drive's dir is
+		// the bundle). Derive the bundle dir from the rootfs drive is fragile; instead place FileRead
+		// images alongside the /work + payload images via the config's existing drive paths is not
+		// available here, so the bundle dir is recovered from an existing drive path_on_host.
+		bundleDir := filepath.Dir(driveHostPath(drives, "payload"))
+		img := filepath.Join(bundleDir, fmt.Sprintf("fileread-%d.ext4", i))
+		if err := buildFileReadDrive(p, img); err != nil {
+			return fmt.Errorf("build FileRead drive for %q: %w", p, err)
+		}
+		drives = append(drives, map[string]any{
+			"drive_id":       fileReadDriveID(i),
+			"path_on_host":   img,
+			"is_root_device": false,
+			"is_read_only":   true,
+		})
+		mapping = append(mapping, fileReadGuestDev(i)+":"+p)
+	}
+	cfg["drives"] = drives
+
+	// Emit the device→mountpoint mapping on the trusted kernel cmdline (appended LAST so the no-
+	// FileRead cmdline is byte-for-byte unchanged). The guest init parses it and mounts each device
+	// read-only at its host path.
+	bs, _ := cfg["boot-source"].(map[string]any)
+	if bs != nil {
+		args, _ := bs["boot_args"].(string)
+		bs["boot_args"] = args + " " + guestFileReadBootArg + "=" + strings.Join(mapping, ",")
+	}
+	return nil
+}
+
+// driveHostPath returns the path_on_host of the drive with the given drive_id, or "" if absent.
+func driveHostPath(drives []map[string]any, id string) string {
+	for _, d := range drives {
+		if d["drive_id"] == id {
+			s, _ := d["path_on_host"].(string)
+			return s
+		}
+	}
+	return ""
+}
+
+// validateDriveReadOnly is the config-level single-writable-surface guard (TC-017-06/07). It asserts
+// that the generated config has EXACTLY ONE writable drive (is_read_only:false) — the /work surface,
+// drive_id "work" — and that every other drive (rootfs, payload, every FileRead) is read-only. A
+// FileRead drive accidentally made writable, or any second writable drive, is a hard error: the
+// single-writable-surface invariant (ADR 004 / F-006) and FileRead-read-only (ADR 005 / F-007) are
+// enforced structurally here, before the config is ever written or booted. The negative case (a
+// writable FileRead drive) proves the check bites and is not a no-op.
+func validateDriveReadOnly(cfg map[string]any, fileReads []string) error {
+	drives, _ := cfg["drives"].([]map[string]any)
+	// Build the set of FileRead drive_ids so a writable one is caught by name in the error.
+	freadIDs := map[string]bool{}
+	for i := range fileReads {
+		freadIDs[fileReadDriveID(i)] = true
+	}
+	writable := 0
+	for _, d := range drives {
+		ro, _ := d["is_read_only"].(bool)
+		id, _ := d["drive_id"].(string)
+		if !ro {
+			writable++
+			if id != workDriveID {
+				return fmt.Errorf("microVM config has a writable non-/work drive %q (is_read_only:false): only the /work surface may be writable (ADR 004/005, F-006/F-007)", id)
+			}
+		}
+		// A FileRead drive must always be read-only (defense in depth: even if it were somehow not the
+		// extra writable drive, a writable FileRead surface is forbidden).
+		if freadIDs[id] && !ro {
+			return fmt.Errorf("microVM config presents FileRead drive %q WRITABLE (is_read_only:false): FileRead paths must be read-only (ADR 005 / F-007)", id)
+		}
+	}
+	if writable > 1 {
+		return fmt.Errorf("microVM config has %d writable drives: /work must be the ONLY writable surface (F-006)", writable)
+	}
+	return nil
+}
+
+// buildWorkdirDrive creates a WRITABLE ext4 image at out seeded from the host workdir (copy-in via
+// `mkfs.ext4 -d`, unprivileged — no root/loop-mount). A host-seeded /work file is therefore readable
+// in-guest. diskMB sizes the writable surface (same disk_mb cap as the payload drive); below the
+// floor (or unset/degraded) uses the floor so the ext4 metadata fits. A missing mkfs.ext4 is a hard
+// error (the guest cannot get its /work), surfaced as a spawn failure.
+func buildWorkdirDrive(workdir, out string, diskMB int) error {
+	mkfs, err := exec.LookPath("mkfs.ext4")
+	if err != nil {
+		return fmt.Errorf("cannot build /work drive: mkfs.ext4 not found on PATH: %w", err)
+	}
+	sizeMB := payloadDriveSizeMB(diskMB)
+	// -b 1024 keeps small images viable (the default 4K block size needs a larger minimum); -F forces
+	// non-interactive; -d seeds from the host workdir without root/loop-mount.
+	cmd := exec.Command(mkfs, "-q", "-F", "-b", "1024", "-d", workdir, out, fmt.Sprintf("%dM", sizeMB))
+	if outBytes, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("mkfs.ext4 /work drive: %w: %s", err, strings.TrimSpace(string(outBytes)))
+	}
+	return nil
+}
+
+// buildFileReadDrive creates a READ-ONLY-presented ext4 image at out seeded from a single host
+// FileRead path (copy-in via `mkfs.ext4 -d`, unprivileged). The host path may be a file or a
+// directory; for a file the image contains it at /<basename> and the guest mounts the device and
+// exposes the file at the same absolute host path (the init binds the device's file to it). The
+// drive carries is_read_only:true so a guest write fails at the virtio layer and the host file is
+// never touched (F-007). The copy-in is a SNAPSHOT — there is no copy-out, so the host file cannot
+// be modified through this path.
+func buildFileReadDrive(hostPath, out string) error {
+	mkfs, err := exec.LookPath("mkfs.ext4")
+	if err != nil {
+		return fmt.Errorf("cannot build FileRead drive: mkfs.ext4 not found on PATH: %w", err)
+	}
+	info, err := os.Stat(hostPath)
+	if err != nil {
+		return fmt.Errorf("stat FileRead path %s: %w", hostPath, err)
+	}
+	staging, err := os.MkdirTemp("", "exec-sandbox-fc-fileread-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(staging)
+	if info.IsDir() {
+		// A directory FileRead surface: image the directory contents under /<basename>.
+		dst := filepath.Join(staging, filepath.Base(hostPath))
+		if err := copyTree(hostPath, dst); err != nil {
+			return err
+		}
+	} else {
+		// A file FileRead surface: stage it under /<basename> so the init can expose it at hostPath.
+		data, err := os.ReadFile(hostPath)
+		if err != nil {
+			return fmt.Errorf("read FileRead path %s: %w", hostPath, err)
+		}
+		if err := os.WriteFile(filepath.Join(staging, filepath.Base(hostPath)), data, info.Mode().Perm()); err != nil {
+			return err
+		}
+	}
+	cmd := exec.Command(mkfs, "-q", "-F", "-b", "1024", "-d", staging, out, "4M")
+	if outBytes, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("mkfs.ext4 FileRead drive: %w: %s", err, strings.TrimSpace(string(outBytes)))
+	}
+	return nil
+}
+
+// copyTree recursively copies src to dst (files + dirs + symlinks-as-regular), preserving perms. It
+// stages a host directory for the unprivileged `mkfs.ext4 -d` seed (copy-in); it is read-only host
+// I/O on the source.
+func copyTree(src, dst string) error {
+	info, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+	if info.IsDir() {
+		if err := os.MkdirAll(dst, info.Mode().Perm()|0o700); err != nil {
+			return err
+		}
+		entries, err := os.ReadDir(src)
+		if err != nil {
+			return err
+		}
+		for _, e := range entries {
+			if err := copyTree(filepath.Join(src, e.Name()), filepath.Join(dst, e.Name())); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(dst, data, info.Mode().Perm())
+}
+
+// copyOutWorkdir copies the guest's writes back from the writable /work ext4 image into the host
+// workdir at TEARDOWN, using `debugfs -R "rdump / <hostdir>"` — an UNPRIVILEGED userspace read of
+// the ext4 image (NO loop-mount, NO root/CAP_SYS_ADMIN). It is best-effort: a copy-out failure is
+// logged-by-omission (the host workdir simply keeps its pre-run state) and never aborts teardown —
+// the run's stdout/exit_code are already captured by the time cleanup runs. This is the persist-at-
+// teardown half of ADR 004's "writes persist to the host work dir" under the block-device mechanism
+// (ADR 010 Q2): live persistence is not available without a host share, so writes land at teardown.
+func copyOutWorkdir(image, hostDir string) {
+	debugfs, err := exec.LookPath("debugfs")
+	if err != nil {
+		return // no debugfs: the host workdir keeps its pre-run state (best-effort copy-out)
+	}
+	// rdump extracts the whole filesystem tree (seeded + guest-written files) into a staging dir, then
+	// we sync it back into the host workdir. Extracting to a staging dir (not directly onto hostDir)
+	// avoids debugfs's chown-to-in-image-uid warnings clobbering host ownership and lets us skip
+	// ext4's lost+found.
+	staging, err := os.MkdirTemp("", "exec-sandbox-fc-workout-")
+	if err != nil {
+		return
+	}
+	defer os.RemoveAll(staging)
+	cmd := exec.Command(debugfs, "-R", "rdump / "+staging, image)
+	// debugfs emits non-fatal "Operation not permitted while changing ownership" warnings as an
+	// unprivileged user; the files are still extracted with the invoking uid + correct content. We
+	// ignore the exit status and sync whatever landed.
+	_ = cmd.Run()
+	entries, err := os.ReadDir(staging)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if e.Name() == "lost+found" {
+			continue // ext4 metadata dir, not a guest write
+		}
+		_ = copyTree(filepath.Join(staging, e.Name()), filepath.Join(hostDir, e.Name()))
+	}
 }
 
 // payloadDriveFloorMB is the minimum payload-drive size (the filesystem metadata + the tiny
