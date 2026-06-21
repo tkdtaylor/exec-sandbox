@@ -17,6 +17,20 @@ how values get into the process (the parsing is in code; the *contract* is here)
 **None.** exec-sandbox is configured entirely per-request via the stdin JSON. There is no
 `config.toml`/`.env`/etc.
 
+## Pinned build-time artifacts
+
+| Artifact | Role | Pin |
+|----------|------|-----|
+| `seccomp/tier1-policy.json` | Plain-text source of truth for the Tier-1 default-deny seccomp profile (default action `SCMP_ACT_ERRNO(EPERM)` + allow/deny syscall lists) | — |
+| `seccomp/tier1.bpf` | Compiled cBPF blob generated offline from the policy by `seccomp/build.sh` (libseccomp `seccomp_export_bpf`); embedded in the binary via `go:embed` and installed at spawn via `bwrap --seccomp <fd>` | `seccomp/tier1.bpf.sha256` |
+| `seccomp/tier1.bpf.sha256` | The sha256 pin verified fail-fast by the stdlib loader before the fd reaches bwrap | self |
+
+These are committed artifacts, not runtime configuration: there is no per-request seccomp
+knob in v1 (one curated Tier-1 default — ADR 016). libseccomp is **build-time tooling only**
+(invoked by `seccomp/build.sh`); the runtime path links none of it and only `open(2)`s the blob
+after a stdlib `crypto/sha256` check. Regenerating the blob (`seccomp/build.sh`) reproduces the
+committed pin; a mismatch aborts the run rather than spawning bwrap unfiltered.
+
 ---
 
 ## Request configuration (the `wiring` object)

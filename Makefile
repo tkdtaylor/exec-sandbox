@@ -3,7 +3,7 @@
 	fitness-no-share-net fitness-cred-not-in-sandbox fitness-no-deps \
 	fitness-handle-prefix fitness-limits fitness-only-workdir \
 	fitness-fileread-ro fitness-output-cap fitness-verb-allowlist \
-	fitness-snapshot-restore
+	fitness-snapshot-restore fitness-tier1-seccomp
 
 build:
 	go build -o bin/exec-sandbox ./...
@@ -30,7 +30,8 @@ clean:
 
 fitness: fitness-no-share-net fitness-cred-not-in-sandbox fitness-handle-prefix \
 	fitness-limits fitness-only-workdir fitness-fileread-ro \
-	fitness-output-cap fitness-verb-allowlist fitness-snapshot-restore
+	fitness-output-cap fitness-verb-allowlist fitness-snapshot-restore \
+	fitness-tier1-seccomp
 	@echo "All fitness checks passed."
 
 # F-001 (block): no backend grants the sandbox a network namespace
@@ -81,3 +82,12 @@ fitness-verb-allowlist:
 # F-010 (block): a restored sandbox is indistinguishable from a fresh one
 fitness-snapshot-restore:
 	go test -count=1 -run 'Snapshot|Restore|Baseline|Leak|OneShot|SecondRun' ./...
+
+# F-011 (block, task 019): Tier-1 runs under a default-deny seccomp profile.
+# The bwrap argv carries --seccomp <fd>; a blocked syscall (keyctl) returns EPERM under a real
+# bwrap run; the loader fails fast on a sha256 mismatch (no unfiltered fall-back); gvisor.go is
+# untouched. Negative case: a --seccomp-stripped argv is rejected (TestFitnessTier1SeccompNegative).
+# Registered into the fitness: umbrella above (coordinates with task 009), the same way the other
+# block rules do. The keyctl probe skips without bwrap/cc but is the load-bearing L6 evidence when present.
+fitness-tier1-seccomp:
+	go test -count=1 -run 'Seccomp|Tier1Seccomp|BwrapArgvCarries|BubblewrapBackendThreads|BackendPropagates|PolicyDeny|Keyctl|CommonCasePayloadStillRuns' ./...

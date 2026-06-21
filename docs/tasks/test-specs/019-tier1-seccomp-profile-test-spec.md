@@ -221,17 +221,17 @@ discovers, the same way task 018's microVM rules coordinate with 009).
 
 ## Post-implementation verification
 
-- [ ] TC-019-01: `bwrapArgv` carries `--seccomp <fd>`; `--unshare-all` kept, no `--share-net`
-- [ ] TC-019-02: sha256 loader accepts the matching blob (stdlib only)
-- [ ] TC-019-03: sha256 loader fails fast on mismatch — no unfiltered fall-back
-- [ ] TC-019-04: blocked `keyctl` returns EPERM under Tier-1 (load-bearing, L6)
-- [ ] TC-019-05: the deny set is present in `tier1-policy.json`
-- [ ] TC-019-06: a common-case payload still runs to a normal exit
-- [ ] TC-019-07: `gvisor.go` untouched; Tier-2/Tier-3 do not get `--seccomp`
-- [ ] TC-019-08: the pinned blob is honestly built from the policy (skips without libseccomp)
-- [ ] TC-019-09: fitness rule positive — argv carries `--seccomp`
-- [ ] TC-019-10: fitness rule negative — the check bites
-- [ ] TC-019-11: spec rewritten in place, present tense
+- [x] TC-019-01: `bwrapArgv` carries `--seccomp <fd>`; `--unshare-all` kept, no `--share-net` (`TestBwrapArgvCarriesSeccomp`, `TestBubblewrapBackendThreadsSeccompFD`)
+- [x] TC-019-02: sha256 loader accepts the matching blob (stdlib only) (`TestSeccompLoaderAcceptsMatchingBlob`)
+- [x] TC-019-03: sha256 loader fails fast on mismatch — no unfiltered fall-back (`TestSeccompLoaderFailsFastOnMismatch`, `TestBackendPropagatesSeccompLoadFailure`)
+- [x] TC-019-04: blocked `keyctl` returns EPERM under Tier-1 (load-bearing, L6) (`TestKeyctlBlockedReturnsEPERM_Bwrap` — ran un-skipped, `errno=1`)
+- [x] TC-019-05: the deny set is present in `tier1-policy.json` (`TestPolicyDenySetCoversDangerousFamily`)
+- [x] TC-019-06: a common-case payload still runs to a normal exit (`TestCommonCasePayloadStillRuns_Bwrap`)
+- [x] TC-019-07: `gvisor.go` untouched; Tier-2/Tier-3 do not get `--seccomp` (git diff zero for `gvisor.go` + `firecracker.go`)
+- [x] TC-019-08: the pinned blob is honestly built from the policy (skips without libseccomp) (`TestSeccompBlobReproducibleFromPolicy` — ran, sha256 matches)
+- [x] TC-019-09: fitness rule positive — argv carries `--seccomp` (`TestFitnessTier1SeccompPositive`)
+- [x] TC-019-10: fitness rule negative — the check bites (`TestFitnessTier1SeccompNegative`)
+- [x] TC-019-11: spec rewritten in place, present tense (SPEC.md invariant, behaviors B-013/B-001/B-008, fitness-functions F-011, configuration.md pinned artifact)
 
 ## Test framework notes
 
