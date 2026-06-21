@@ -63,7 +63,7 @@ func assertGvisorNoSharedNetNS(spec map[string]any) error {
 func TestFitnessNoShareNetPositive(t *testing.T) {
 	// bwrap side
 	argv := bwrapArgv("/tmp/payload.sh", "/tmp/proxy.sock", "", nil, nil, 0,
-		[]string{"/usr/bin/sh", "/payload.sh"}, -1)
+		[]string{"/usr/bin/sh", "/payload.sh"}, -1, 3)
 	joined := strings.Join(argv, " ")
 	if err := assertNoShareNet(joined); err != nil {
 		t.Fatal(err)
@@ -105,6 +105,45 @@ func TestFitnessNoShareNetNegative(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// F-011 helper (task 019): Tier-1 default-deny seccomp profile
+// ---------------------------------------------------------------------------
+
+// assertSeccompInArgv checks that argv is a Tier-1 bwrap argv carrying --seccomp immediately
+// followed by a numeric fd token, while STILL keeping --unshare-all and omitting --share-net (the
+// seccomp flag ADDS to the no-network model — it must never displace it). Returns a non-nil error
+// when the invariant is violated, mirroring the F-001 assertNoShareNet idiom so the negative case
+// (a --seccomp-stripped argv) provably bites.
+func assertSeccompInArgv(argv []string) error {
+	joined := strings.Join(argv, " ")
+	if !strings.Contains(joined, "--unshare-all") {
+		return fmt.Errorf("F-011: --unshare-all missing from argv: %s", joined)
+	}
+	if strings.Contains(joined, "--share-net") {
+		return fmt.Errorf("F-011: --share-net present in argv: %s", joined)
+	}
+	found := false
+	for i := 0; i+1 < len(argv); i++ {
+		if argv[i] == "--seccomp" {
+			fd := argv[i+1]
+			if fd == "" {
+				return fmt.Errorf("F-011: --seccomp has no fd token: %s", joined)
+			}
+			for _, c := range fd {
+				if c < '0' || c > '9' {
+					return fmt.Errorf("F-011: --seccomp fd token %q is not numeric: %s", fd, joined)
+				}
+			}
+			found = true
+			break
+		}
+	}
+	if !found {
+		return fmt.Errorf("F-011: --seccomp <fd> missing from Tier-1 argv: %s", joined)
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------------
 // F-002 helpers
 // ---------------------------------------------------------------------------
 
@@ -135,7 +174,7 @@ func TestFitnessCredNotInSandboxPositive(t *testing.T) {
 
 	// Build the argv surface (bwrap side, no env, no credential in the spawn arg list).
 	argv := bwrapArgv("/tmp/payload.sh", "/tmp/proxy.sock", "", nil, nil, 0,
-		[]string{"/usr/bin/sh", "/payload.sh"}, -1)
+		[]string{"/usr/bin/sh", "/payload.sh"}, -1, 3)
 	argvJoined := strings.Join(argv, " ")
 
 	// The proxy holds the credential but nothing in the argv/env path sees it.

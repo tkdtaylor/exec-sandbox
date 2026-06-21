@@ -62,6 +62,16 @@ not yet implemented. The seam keeps the `run()` contract stable across tiers.
   bubblewrap via `bwrap --unshare-all`, gVisor via an OCI spec declaring an empty `network`
   namespace plus `runsc --network=none`. There is no `--share-net` and no direct route out.
   Enforced in code by `bwrapArgv` and `gvisorOCISpec`; proposed as fitness rule F-001.
+- **Tier-1 runs under a default-deny seccomp profile.** The bubblewrap backend installs a
+  default-deny + allowlist seccomp-BPF filter via `bwrap --seccomp <fd>`: the dangerous syscall
+  family (`keyctl`, `add_key`, `request_key`, `ptrace`, `process_vm_readv`/`writev`, `userfaultfd`,
+  `bpf`, `perf_event_open`, the `mount`/`umount2`/`pivot_root`, `kexec_*`, and `*_module` families,
+  …) returns `EPERM`, while the common-case syscalls a payload shell + the proxy client need stay
+  allowed. The filter is a build-time-generated, sha256-pinned cBPF blob loaded fail-fast (a
+  mismatch aborts the run — never an unfiltered spawn); it **adds to** the no-network model
+  (`--unshare-all` kept, `--share-net` absent). Tier-2 (gVisor) and Tier-3 (Firecracker) self-filter
+  every syscall and do not get `--seccomp` (ADR 016). Enforced in code by `bwrapArgv` +
+  `loadTier1Seccomp`; fitness rule F-011.
 - **The bind-mounted proxy socket is the only egress.** `/proxy.sock` is the sole path out of
   the sandbox. The egress proxy enforces the domain allowlist; non-allowlisted hosts get `403`.
 - **exec-sandbox owns the network boundary; vault owns credential injection.** exec-sandbox

@@ -363,22 +363,35 @@ func (bubblewrapBackend) Argv(scriptPath, proxySock, workdir string, fileReads [
 		return nil, nil, nil, nil, err
 	}
 
+	// Tier-1 default-deny seccomp profile (ADR 016): load + verify the pinned cBPF blob and thread
+	// its open fd into bwrap via --seccomp. A mismatch / load failure is a HARD error — the run does
+	// not fall back to spawning bwrap WITHOUT the filter. The seccomp file is always the first
+	// extraFile (child fd 3) so the fd number is deterministic; the env-mode args pipe (when present)
+	// follows at fd 4.
+	seccompFile, err := loadTier1SeccompFn()
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	extraFiles := []*os.File{seccompFile}
+	seccompFD := 3 // ExtraFiles[0] is fd 3 in the child
+
 	// env-mode credentials (ADR 015): when present, the --clearenv + ALL --setenv directives move into
 	// a pipe consumed via bwrap --args FD, so the credential VALUE never lands on the literal spawn
-	// argv (/proc/<pid>/cmdline). The pipe read end is returned as an extraFile → child fd 3. When no
-	// env-mode credential was injected, env stays inline on the argv exactly as before (no pipe).
-	var extraFiles []*os.File
+	// argv (/proc/<pid>/cmdline). The pipe read end follows the seccomp file as the next extraFile →
+	// child fd 4. When no env-mode credential was injected, env stays inline on the argv exactly as
+	// before (no pipe).
 	envCredsFD := -1
 	if len(envCreds) > 0 {
 		pr, err := bwrapEnvArgsPipe(env, envCreds)
 		if err != nil {
+			seccompFile.Close()
 			return nil, nil, nil, nil, err
 		}
-		extraFiles = []*os.File{pr}
-		envCredsFD = 3 // ExtraFiles[0] is fd 3 in the child
+		extraFiles = append(extraFiles, pr)
+		envCredsFD = 4 // ExtraFiles[1] is fd 4 in the child
 	}
 
-	argv := bwrapArgv(scriptPath, proxySock, workdir, fileReads, env, diskBytes, inner, envCredsFD)
+	argv := bwrapArgv(scriptPath, proxySock, workdir, fileReads, env, diskBytes, inner, envCredsFD, seccompFD)
 
 	// cpu_count → taskset affinity prefix on the whole argv (inherited into the sandbox).
 	if prefix, d := cpuAffinityPrefix(lim.CPUCount); d != nil {
@@ -427,8 +440,14 @@ func bwrapEnvArgsPipe(env map[string]string, envCreds [][2]string) (*os.File, er
 // --setenv directives (regular env AND credential) are read by bwrap from that file descriptor via
 // --args, keeping every env VALUE off the literal argv (/proc/<pid>/cmdline). When < 0 (the common
 // case — no env-mode handle) the env is set inline via --clearenv + --setenv exactly as before.
-func bwrapArgv(scriptPath, proxySock, workdir string, fileReads []string, env map[string]string, diskBytes int, finalCmd []string, envCredsFD int) []string {
+// seccompFD: the child-visible fd of the verified Tier-1 default-deny cBPF blob (ADR 016). bwrap
+// installs it via --seccomp <fd> as a seccomp filter on the sandboxed payload, denying the
+// dangerous syscall family (keyctl, ptrace, bpf, the mount/module/kexec families, …) with EPERM.
+// This ADDS to the no-network model — --unshare-all stays, --share-net stays absent. seccompFD is
+// always >= 0 on Tier-1 (the profile is mandatory; a load failure aborts the run before this).
+func bwrapArgv(scriptPath, proxySock, workdir string, fileReads []string, env map[string]string, diskBytes int, finalCmd []string, envCredsFD, seccompFD int) []string {
 	argv := []string{"bwrap",
+		"--seccomp", strconv.Itoa(seccompFD),
 		"--ro-bind", "/usr", "/usr",
 		"--ro-bind", "/etc", "/etc",
 		"--proc", "/proc", "--dev", "/dev"}

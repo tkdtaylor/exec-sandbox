@@ -1,6 +1,6 @@
 # Task 019: Tier-1 seccomp-BPF default-deny syscall profile
 
-**Status:** ⬜ backlog
+**Status:** 🟡 code merged (awaiting spec-verifier + verify commit for ✅)
 **Branch:** `task/019-tier1-seccomp-profile`
 **Spec:** [`docs/tasks/test-specs/019-tier1-seccomp-profile-test-spec.md`](../test-specs/019-tier1-seccomp-profile-test-spec.md)
 **ADR:** **required during implementation** — a custom default-deny seccomp profile is a significant security decision. Write the ADR (the seccomp-profile design: Tier-1-only scope + the rejected-for-Tier-2/3 rationale, the deny set, the build-time cBPF generation + sha256 pinning approach) taking the **next available ADR number** (sequential-by-creation; not bound to the task ID — ADR 011 is already taken by the egress-boundaries decision). Land the ADR commit before the feat commit.

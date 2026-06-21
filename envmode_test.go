@@ -485,19 +485,25 @@ func TestBwrapBackendEnvCredsOffArgv(t *testing.T) {
 	if strings.Contains(joined, sentinel) {
 		t.Fatalf("env-mode credential value on the literal bwrap argv: %s", joined)
 	}
-	if !strings.Contains(joined, "--args 3") {
-		t.Fatalf("expected --args 3 (off-argv env delivery); argv: %s", joined)
+	// Tier-1 always threads the seccomp blob as ExtraFiles[0] (child fd 3); the env-mode --args pipe
+	// follows as ExtraFiles[1] (child fd 4). So off-argv env delivery is --args 4 (ADR 016 + ADR 015).
+	if !strings.Contains(joined, "--args 4") {
+		t.Fatalf("expected --args 4 (off-argv env delivery; seccomp holds fd 3); argv: %s", joined)
+	}
+	// The seccomp filter must still be installed alongside the env-mode delivery.
+	if !strings.Contains(joined, "--seccomp 3") {
+		t.Fatalf("expected --seccomp 3 (seccomp blob at fd 3) alongside env-mode delivery; argv: %s", joined)
 	}
 	if strings.Contains(joined, "--clearenv") {
 		t.Fatalf("--clearenv should move into the --args FD when delivering env-mode creds: %s", joined)
 	}
-	if len(extra) != 1 {
-		t.Fatalf("expected exactly one extraFile (the --args pipe), got %d", len(extra))
+	if len(extra) != 2 {
+		t.Fatalf("expected exactly two extraFiles (the seccomp blob + the --args pipe), got %d", len(extra))
 	}
 
-	// And the FD payload DOES carry the --setenv directive (read the pipe).
+	// And the FD payload DOES carry the --setenv directive (read the pipe — ExtraFiles[1]).
 	buf := make([]byte, 4096)
-	n, _ := extra[0].Read(buf)
+	n, _ := extra[1].Read(buf)
 	payload := string(buf[:n])
 	if !strings.Contains(payload, "API_TOKEN") || !strings.Contains(payload, sentinel) {
 		t.Fatalf("--args FD payload missing the env-mode --setenv: %q", payload)
