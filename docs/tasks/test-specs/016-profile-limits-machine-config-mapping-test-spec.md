@@ -161,10 +161,10 @@ Ground truth to mirror:
 
 ## Post-implementation verification
 
-- [ ] TC-016-01..05: cpu/mem/disk/pids map to the right targets; zero ⇒ defaults
-- [ ] TC-016-06: disk_mb degrades (warn + continue) when unsizeable
-- [ ] TC-016-07..08: timeout_sec + max_output_bytes absent from the config (host-side, unchanged)
-- [ ] TC-016-09..11: behavioral enforcement on a booted guest (OOM, NPROC, nproc==1) (L5)
+- [x] TC-016-01..05: cpu/mem/disk/pids map to the right targets; zero ⇒ defaults
+- [x] TC-016-06: disk_mb degrades (warn + continue) when unsizeable
+- [x] TC-016-07..08: timeout_sec + max_output_bytes absent from the config (host-side, unchanged)
+- [x] TC-016-09..11: behavioral enforcement on a booted guest (OOM exit 137/"Killed"; "can't fork: Resource temporarily unavailable"; nproc==1) on a real microVM (/dev/kvm, firecracker v1.16.0) (L5)
 
 ## Test framework notes
 

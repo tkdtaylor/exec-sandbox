@@ -29,7 +29,12 @@ trap cleanup EXIT
 
 echo "[build.sh] exporting ${ALPINE_TAG} rootfs via docker..."
 docker pull "$ALPINE_TAG" >/dev/null
-cid="$(docker create "$ALPINE_TAG" /bin/true)"
+# Install the util-linux `setpriv` into the image before export: the guest init uses it to drop the
+# payload to an unprivileged uid (65534) when a pids cap is requested, so RLIMIT_NPROC actually bites
+# (the kernel does not enforce NPROC for a uid-0 process). The busybox `setpriv` applet lacks
+# --reuid/--regid/--clear-groups, so the full util-linux binary is required (ADR 010 D4, task 016).
+cid="$(docker create "$ALPINE_TAG" /bin/sh -c 'apk add --no-cache setpriv >/dev/null 2>&1 || true')"
+docker start -a "$cid" >/dev/null 2>&1 || true
 mkdir -p "$work/rootfs"
 docker export "$cid" | tar -C "$work/rootfs" -xf -
 docker rm "$cid" >/dev/null

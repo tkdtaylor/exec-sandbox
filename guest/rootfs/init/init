@@ -44,9 +44,48 @@ if [ -b /dev/vdb ]; then
 	fi
 fi
 
+# pids -> in-guest RLIMIT_NPROC. The host emits `exec_sandbox.nproc=N` on the kernel cmdline (only
+# when profile.limits.pids > 0); parse it here and apply it as an RLIMIT_NPROC ceiling BEFORE running
+# the payload, so a fork bomb in the payload hits the cap. The guest owns its own pid space, so this
+# rlimit must be set inside the guest (analogous to the host-side prlimit --nproc wrap on the other
+# tiers). Absent arg => no cap (the "zero = no limit" contract).
+NPROC=""
+for tok in $(cat /proc/cmdline 2>/dev/null); do
+	case "$tok" in
+		exec_sandbox.nproc=*) NPROC="${tok#exec_sandbox.nproc=}" ;;
+	esac
+done
+# Validate: digits only, non-empty.
+case "$NPROC" in
+	"" | *[!0-9]*) NPROC="" ;;
+esac
+
 # Run the payload as /usr/bin/sh /payload.sh — the same entry point as every other tier.
-/usr/bin/sh "$PAYLOAD"
-code=$?
+#
+# When an NPROC cap is requested we MUST run the payload as an UNPRIVILEGED user: the Linux kernel
+# does NOT enforce RLIMIT_NPROC for a privileged process (one holding CAP_SYS_ADMIN/CAP_SYS_RESOURCE
+# — which a uid-0 guest process does), so a root payload would sail past the cap (verified: a fork
+# bomb under uid 0 never hits the cap). So we (1) set RLIMIT_NPROC=N with `ulimit -u` — inherited
+# across the exec below — then (2) `setpriv --reuid 65534 --regid 65534 --clear-groups` to drop to
+# nobody and clear ALL capabilities, then exec the payload. As uid 65534 (with no caps) the inherited
+# RLIMIT_NPROC genuinely bites — the in-guest analogue of the per-sandbox userns NPROC under
+# bubblewrap. The payload reaches /proxy.sock as before (the shim's socket is world-accessible on the
+# /run tmpfs).
+#
+# With no NPROC cap the payload runs exactly as task 015 (root, /usr/bin/sh /payload.sh) —
+# byte-for-byte the prior boot, so the egress/boot E2E tests are unchanged.
+# /usr/bin/setpriv is the util-linux binary (supports --reuid/--regid/--clear-groups); the busybox
+# applet at /bin/setpriv does NOT, so the absolute path is used to bypass PATH (which has /bin first).
+if [ -n "$NPROC" ] && [ -x /usr/bin/setpriv ]; then
+	chmod 0777 /run 2>/dev/null
+	ulimit -u "$NPROC" 2>/dev/null
+	/usr/bin/setpriv --reuid 65534 --regid 65534 --clear-groups --no-new-privs --inh-caps=-all \
+		/usr/bin/sh "$PAYLOAD"
+	code=$?
+else
+	/usr/bin/sh "$PAYLOAD"
+	code=$?
+fi
 
 # Emit the exit-code sentinel the host launcher (fc-launch) parses off the serial console. The
 # guest's exit code is NOT the firecracker process exit code, so the launcher reconstructs it from

@@ -1,7 +1,7 @@
 # Configuration
 
 **Project:** exec-sandbox
-**Last updated:** 2026-06-20 (task 015: Tier-3 Firecracker host prerequisites + vendored pinned guest artifacts)
+**Last updated:** 2026-06-20 (task 016: profile.limits → Firecracker machine-config mapping — cpu_count→vcpu_count, memory_mb→mem_size_mib, disk_mb→writable-drive size, pids→in-guest RLIMIT_NPROC via setpriv; timeout/output stay host-side)
 
 Every knob the system exposes. exec-sandbox has **no config files and reads no application
 environment variables** — all configuration arrives inside the stdin `RunRequest`. The tunable
@@ -64,12 +64,12 @@ Execution-shaping fields under `run`:
 
 | Key | Type | Enforced by | Effect |
 |-----|------|-------------|--------|
-| `cpu_count` | int (cores) | `taskset -c 0-(N-1)` affinity on the spawn argv | Pins the sandbox to N cores. **Secondary control:** degrades (warn + continue) when `taskset` is absent. Under gVisor, verified host-side via the argv record (ADR 028). |
-| `memory_mb` | int (MiB) | `RLIMIT_AS` — bwrap: in-sandbox `prlimit --as`; gVisor: OCI `process.rlimits` | A payload exceeding the address-space ceiling is killed by the allocator. |
-| `pids` | int | `RLIMIT_NPROC` — bwrap: in-sandbox `prlimit --nproc` (per-sandbox via the userns); gVisor: OCI `process.rlimits` | A fork bomb hits the cap ("Cannot fork"). |
-| `disk_mb` | int (MiB) | `/tmp` tmpfs size — bwrap: `--size`; gVisor: tmpfs `size=` option | Writes past the cap return ENOSPC. **Secondary control:** degrades (warn + continue) when the writable layer can't be size-capped (`diskQuotaSupported`). |
-| `timeout_sec` | int (s) | host-side `context.WithTimeout` + process-group `SIGKILL` (backend-agnostic) | The payload (and its whole process group) is killed at the deadline; `sandbox_status.status` becomes `"timeout"`, `exit_code` `137`. |
-| `max_output_bytes` | int (bytes) | host-side capture cap in `Run()` — a capping writer per stream, **above** the `tier` seam (backend-agnostic) | Captured stdout/stderr are each retained up to the ceiling; overflow is **dropped** without erroring the payload (its exit is unchanged). stdout/stderr capped **independently** at the same ceiling; identical under bubblewrap and gVisor (the backend argv/OCI spec are unchanged). The capped streams are listed in `sandbox_status.limits.output_truncated`. A host memory guard against a payload that floods stdout, distinct from the in-sandbox `memory_mb` rlimit. |
+| `cpu_count` | int (cores) | bwrap/gVisor: `taskset -c 0-(N-1)` affinity on the spawn argv. **Firecracker: `machine-config.vcpu_count`** — the microVM literally has N vCPUs (a **real** cap, **no** `taskset` prefix on the argv) | Pins the sandbox to N cores. Under bwrap/gVisor a **secondary control** that degrades (warn + continue) when `taskset` is absent (under gVisor verified host-side via the argv record, ADR 028); under **Firecracker it is a load-bearing real cap** — the guest reports `nproc == N` (a *stronger* enforcement than the namespace tiers' affinity hint, never a degrade). |
+| `memory_mb` | int (MiB) | bwrap: in-sandbox `prlimit --as` (`RLIMIT_AS`); gVisor: OCI `process.rlimits`. **Firecracker: `machine-config.mem_size_mib`** — the guest's hard RAM ceiling | A payload exceeding the ceiling is killed: by the allocator (bwrap/gVisor `RLIMIT_AS`) or **OOM-killed by the guest kernel** (Firecracker — the microVM cannot exceed `mem_size_mib`; exit 137 / "Killed"). |
+| `pids` | int | bwrap: in-sandbox `prlimit --nproc` (per-sandbox via the userns); gVisor: OCI `process.rlimits`. **Firecracker: an in-guest `RLIMIT_NPROC`** — the host emits `exec_sandbox.nproc=N` on the kernel cmdline; the guest init applies `ulimit -u N` and **drops the payload to nobody** (`setpriv --reuid 65534`) before running it (the kernel does not enforce NPROC for a uid-0 process, so the privilege drop is what makes the cap bite) | A fork bomb hits the cap ("Cannot fork" / "can't fork: Resource temporarily unavailable"). |
+| `disk_mb` | int (MiB) | bwrap/gVisor: `/tmp` tmpfs size (`--size` / tmpfs `size=`). **Firecracker: the size of the writable payload drive (vdb)** | Writes past the cap return ENOSPC. **Secondary control:** degrades (warn + continue, `degraded:[disk_mb]`) on every tier when the writable layer can't be size-capped (`diskQuotaSupported`); the Firecracker drive then falls back to its floor default, never a silent drop. |
+| `timeout_sec` | int (s) | host-side `context.WithTimeout` + process-group `SIGKILL` (backend-agnostic, **above** the `tier` seam) | The payload (and its whole process group) is killed at the deadline; `sandbox_status.status` becomes `"timeout"`, `exit_code` `137`. **Not** in the Firecracker config — it is byte-for-byte independent of this cap. |
+| `max_output_bytes` | int (bytes) | host-side capture cap in `Run()` — a capping writer per stream, **above** the `tier` seam (backend-agnostic) | Captured stdout/stderr are each retained up to the ceiling; overflow is **dropped** without erroring the payload (its exit is unchanged). stdout/stderr capped **independently** at the same ceiling; identical under bubblewrap, gVisor, and Firecracker (the backend argv/OCI spec / firecracker config are unchanged — the Firecracker config is byte-for-byte independent of this cap). The capped streams are listed in `sandbox_status.limits.output_truncated`. A host memory guard against a payload that floods stdout, distinct from the in-sandbox `memory_mb` rlimit. |
 
 ---
 

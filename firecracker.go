@@ -31,6 +31,14 @@ import (
 // mirroring gvisor.go:18-20).
 type firecrackerBackend struct{}
 
+// guestNprocBootArg is the kernel-cmdline key the host emits (when pids > 0) and the guest init
+// parses to apply an in-guest RLIMIT_NPROC (`ulimit -u N`, with the payload dropped to an
+// unprivileged uid via setpriv so the cap bites) before running the payload. It is the pids delivery
+// mechanism (ADR 010 D4): the guest, not the host, owns its pid space, so the cap must be set inside
+// the guest — the cmdline is the simplest trusted host→guest channel (it is part of the verified
+// boot, not the untrusted payload drive). Must match the key the init scans for.
+const guestNprocBootArg = "exec_sandbox.nproc"
+
 // Argv verifies the pinned guest artifacts, builds the per-run bundle, starts the host-side vsock
 // bridge, and returns the bwrap-wrapped `exec-sandbox fc-launch <bundle>` argv plus a cleanup that
 // stops the bridge and removes the bundle. A missing/unverifiable artifact, a missing /dev/kvm, or
@@ -67,11 +75,24 @@ func (firecrackerBackend) Argv(scriptPath, proxySock, workdir string, fileReads 
 		return nil, nil, nil, nil, err
 	}
 
+	// disk_mb sizes the writable payload drive (the guest's writable layer). It is a SECONDARY
+	// control: when the host can't size the writable layer (diskQuotaSupported()==false) it degrades
+	// (warn + continue) exactly like applyLimitsToOCISpec under gVisor — never a silent drop. The
+	// degrade is decided once here so both the drive-build and the audit record see the same effective
+	// disk cap.
+	var degrades []degrade
+	diskMB := lim.DiskMB
+	if lim.DiskMB > 0 && !diskQuotaSupported() {
+		degrades = append(degrades, degrade{"disk_mb",
+			"disk_mb limit not enforced: writable-layer size quota unsupported on this host; running without disk quota"})
+		diskMB = 0 // unsized — the floor default applies, never silently capped
+	}
+
 	// The untrusted payload is NEVER baked into the read-only base (A1.Q1). It is presented on a
 	// separate writable drive (vdb) the backend builds per run from scriptPath; the guest init
 	// mounts /dev/vdb read-only and runs /usr/bin/sh on payload.sh from it.
 	payloadDrive := filepath.Join(bundle, "payload.ext4")
-	if err := buildPayloadDrive(scriptPath, payloadDrive, lim); err != nil {
+	if err := buildPayloadDrive(scriptPath, payloadDrive, diskMB); err != nil {
 		cleanup()
 		return nil, nil, nil, nil, err
 	}
@@ -95,14 +116,11 @@ func (firecrackerBackend) Argv(scriptPath, proxySock, workdir string, fileReads 
 		return nil, nil, nil, nil, err
 	}
 
-	// cpu_count → taskset affinity prefix on the whole argv (inherited into the firecracker child),
-	// matching the bwrap/gVisor tiers. A missing taskset degrades (warn + continue), never fails.
-	var degrades []degrade
-	if prefix, d := cpuAffinityPrefix(lim.CPUCount); d != nil {
-		degrades = append(degrades, *d)
-	} else if prefix != nil {
-		argv = append(prefix, argv...)
-	}
+	// cpu_count → machine-config.vcpu_count (a REAL vCPU cap — the guest literally has that many
+	// vCPUs), NOT a host-side taskset affinity prefix. For the firecracker tier there is therefore NO
+	// taskset prefix on the argv: the vcpu_count cap is STRONGER than the namespace tiers' affinity
+	// hint (ADR 010 D4), not a degrade. The mapping is applied in firecrackerConfig above; nothing is
+	// added to the argv here.
 
 	return argv, cleanup, degrades, nil, nil
 }
@@ -195,11 +213,28 @@ func addPayloadDrive(cfg map[string]any, payloadDrive string) {
 	})
 }
 
-// buildPayloadDrive creates a small ext4 image at out containing payload.sh (copied from scriptPath).
-// It uses `mkfs.ext4 -d` to populate the image without root/loop-mount. disk_mb sizes the image when
-// set (default 2 MiB — payload.sh is tiny; the writable /work surface is task 017's concern). A
-// missing mkfs.ext4 is a hard error (the guest cannot get its payload), surfaced as a spawn failure.
-func buildPayloadDrive(scriptPath, out string, lim Limits) error {
+// payloadDriveFloorMB is the minimum payload-drive size (the filesystem metadata + the tiny
+// payload.sh must fit). A disk_mb below the floor is raised to it; disk_mb == 0 (unset, or degraded
+// away) uses the floor as the default. The writable /work surface is task 017's concern.
+const payloadDriveFloorMB = 2
+
+// payloadDriveSizeMB maps disk_mb onto the writable-drive size in MiB: disk_mb above the floor sizes
+// the drive to exactly disk_mb; disk_mb == 0 (unset, or degraded away by the diskQuotaSupported
+// check) or below the floor uses the floor default so the ext4 metadata always fits. It is a pure
+// function so the disk_mb → drive-size mapping is unit-testable without mkfs.ext4 (TC-016-03).
+func payloadDriveSizeMB(diskMB int) int {
+	if diskMB > payloadDriveFloorMB {
+		return diskMB
+	}
+	return payloadDriveFloorMB
+}
+
+// buildPayloadDrive creates an ext4 image at out containing payload.sh (copied from scriptPath). It
+// uses `mkfs.ext4 -d` to populate the image without root/loop-mount. diskMB sizes the writable drive
+// presented to the guest (the guest's writable layer): disk_mb > floor sizes the image to exactly
+// disk_mb; 0 (unset or degraded) uses the floor default. A missing mkfs.ext4 is a hard error (the
+// guest cannot get its payload), surfaced as a spawn failure.
+func buildPayloadDrive(scriptPath, out string, diskMB int) error {
 	mkfs, err := exec.LookPath("mkfs.ext4")
 	if err != nil {
 		return fmt.Errorf("cannot build payload drive: mkfs.ext4 not found on PATH: %w", err)
@@ -216,10 +251,7 @@ func buildPayloadDrive(scriptPath, out string, lim Limits) error {
 	if err := os.WriteFile(filepath.Join(staging, "payload.sh"), data, 0o644); err != nil {
 		return err
 	}
-	sizeMB := 2
-	if lim.DiskMB > 0 && lim.DiskMB < 2 {
-		sizeMB = 2 // floor so the filesystem metadata fits
-	}
+	sizeMB := payloadDriveSizeMB(diskMB)
 	cmd := exec.Command(mkfs, "-q", "-F", "-d", staging, out, fmt.Sprintf("%dM", sizeMB))
 	if outBytes, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("mkfs.ext4 payload drive: %w: %s", err, strings.TrimSpace(string(outBytes)))
@@ -236,15 +268,24 @@ func buildPayloadDrive(scriptPath, out string, lim Limits) error {
 // inputs produce a byte-for-byte identical JSON output (TC-013-07).
 //
 // Config sections:
-//   - machine-config: vCPU + memory (limits → task 016 maps the details; zero values here)
-//   - boot-source:    kernel image path + boot args running /usr/bin/sh /payload.sh
+//   - machine-config: vcpu_count ← cpu_count (a REAL vCPU cap), mem_size_mib ← memory_mb (the
+//     guest's RAM ceiling). Zero/absent ⇒ the Firecracker default (1 vCPU / 128 MiB) — the "zero =
+//     no cap" contract; the default IS the no-cap shape (ADR 010 D4).
+//   - boot-source:    kernel image path + boot args running /usr/bin/sh /payload.sh; pids ← an
+//     `exec_sandbox.nproc=N` cmdline arg the guest init applies as an in-guest RLIMIT_NPROC.
 //   - drives:         root drive (rootfs, read-only, root_device=true)
 //   - vsock:          host-side UDS path bridging to the EgressProxy (task 014)
 //
+// timeout_sec and max_output_bytes are DELIBERATELY ABSENT — they are enforced host-side in Run()
+// (above the tier seam), so the firecracker config is byte-for-byte identical whether or not those
+// two caps are set (TC-016-07/08).
+//
 // Deliberately absent: network-interfaces (D2 — no NIC by omission).
 func firecrackerConfig(kernelPath, rootfsPath, scriptPath, vsockUDS string, lim Limits) map[string]any {
-	// machine-config: vcpu_count and mem_size_mib from limits (task 016 owns the full mapping;
-	// sensible defaults for the skeleton so the config is valid structure today).
+	// machine-config: cpu_count → vcpu_count (a real vCPU cap, NOT a taskset affinity hint — stronger
+	// than the namespace tiers), memory_mb → mem_size_mib (the guest's hard RAM ceiling). A zero field
+	// leaves the Firecracker default (1 vCPU / 128 MiB): the default IS the "no cap" shape, so the
+	// emitted config is unchanged from the task-015 no-limits boot.
 	vcpuCount := 1
 	if lim.CPUCount > 0 {
 		vcpuCount = lim.CPUCount
@@ -264,6 +305,15 @@ func firecrackerConfig(kernelPath, rootfsPath, scriptPath, vsockUDS string, lim 
 	// the cmdline (the payload arrives on /dev/vdb, not the cmdline).
 	_ = scriptPath
 	bootArgs := "console=ttyS0 reboot=k panic=1 pci=off i8042.noaux i8042.nomux i8042.nopnp i8042.dumbkbd init=/sbin/init"
+
+	// pids → in-guest RLIMIT_NPROC, delivered as a kernel boot-arg the guest init parses and applies
+	// with `ulimit -p` BEFORE running the payload (the guest owns its pid space — analogous to
+	// prlimitWrap, limits.go:88). pids is NOT a machine-config field; it rides the cmdline because the
+	// guest, not the host, must set the rlimit. Zero/absent ⇒ no arg ⇒ no in-guest NPROC cap. The arg
+	// is appended LAST so the no-pids cmdline is byte-for-byte the task-015 boot shape.
+	if lim.PidsLimit > 0 {
+		bootArgs += " " + guestNprocBootArg + "=" + strconv.Itoa(lim.PidsLimit)
+	}
 
 	return map[string]any{
 		"machine-config": map[string]any{
