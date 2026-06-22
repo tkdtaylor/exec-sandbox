@@ -1,6 +1,6 @@
 # exec-sandbox — OS execution isolation with tiered, risk-selected runtimes
 
-Answers one question: *when agent-generated code runs, is its execution boundary isolated from the host and from other sandboxes?* exec-sandbox runs the code in a sandbox with **no network**, and its **only** path out is a host-side egress proxy with a domain allowlist. `vault` plugs credential injection into that proxy — in proxy mode the secret never enters the sandbox at all.
+Answers one question: *when agent-generated code runs, is its execution boundary isolated from the host and from other sandboxes?* exec-sandbox runs the code in a sandbox with **no network**, and its **only** path out is a host-side egress proxy with a domain allowlist. [vault](https://github.com/tkdtaylor/vault) plugs credential injection into that proxy — in proxy mode the secret never enters the sandbox at all.
 
 - **Tiered isolation** — Tier-1 `bwrap --unshare-all` (no network namespace; a direct connect returns curl `000`) and Tier-2 gVisor/`runsc` over a generated OCI bundle, selected per run by `tier` (ADR 002)
 - **exec-sandbox owns the network boundary** — `--network none` + egress proxy (Unix socket) + domain allowlist, narrowed by an optional **per-host HTTP-verb allowlist** (ADR 008)
@@ -8,7 +8,7 @@ Answers one question: *when agent-generated code runs, is its execution boundary
 - **Per-run resource limits** — cpu / memory / pids / disk / wall-clock plus host-side stdout/stderr output caps enforced above the tier seam (ADR 003, ADR 007)
 - **Controlled host I/O** — optional writable `/work` dir, read-only `FileRead` mounts, and `env`/`PATH` provisioning (ADR 004, ADR 005)
 - **Leak-proof reset** — snapshot/restore returns the sandbox to a pristine baseline between runs (ADR 009)
-- **Audit emission** — spawn / inject / exit events to `audit-trail`
+- **Audit emission** — spawn / inject / exit events to [audit-trail](https://github.com/tkdtaylor/audit-trail)
 
 > Prior-art verdict (from ecosystem prior-art scoping): **BUILD an open tiered orchestration harness** — adopt OCI runtimes (gVisor/Firecracker/Kata) as pluggable backends; derive Tier 1 from `@anthropic-ai/sandbox-runtime` (Apache-2.0). The value-add is the harness: policy→tier selection, vault credential injection, audit emission. **Language: Go** (bubblewrap/OCI/containerd ecosystem). **License: Apache-2.0.**
 
@@ -17,9 +17,9 @@ Answers one question: *when agent-generated code runs, is its execution boundary
 **What exec-sandbox does:** OS-level execution isolation for agent-generated code — tiered namespaces/seccomp → gVisor → Firecracker, selected per run, owning the network egress boundary.
 
 **What it does *not* do (and which sibling owns it instead):**
-- Inspect LLM content — prompts, outputs, tool-calls → **armor**
+- Inspect LLM content — prompts, outputs, tool-calls → **[armor](https://github.com/tkdtaylor/armor)**
 - Store or own secret values — it *receives* them at the boundary at spawn → **vault**
-- Decide whether an action is permitted → **policy-engine**
+- Decide whether an action is permitted → **[policy-engine](https://github.com/tkdtaylor/policy-engine)**
 - Ship a standalone WASM / pre-compiled-tool sandbox — that is a *possible future tier here* (nested inside OS isolation, since WASM is not a standalone trust boundary), **not** a separate block; typed WASM tool *invocation* is an MCP-WASM interop concern, not ours to rebuild. See [ADR 012](docs/architecture/decisions/012-wasm-tool-isolation-scope.md).
 
 `exec-sandbox` is one block in a composable secure-agent ecosystem — each block is standalone and independently usable, and composes with its siblings over published contracts rather than absorbing their responsibilities (no central "god object").
