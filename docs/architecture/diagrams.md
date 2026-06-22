@@ -119,7 +119,7 @@ sequenceDiagram
     Agent->>Run: RunRequest {payload, profile, tier, secret_refs} on stdin
     Run->>Run: parse NetConnect allowlist + per-host verb sets, mint sandbox_identity
     Run->>Audit: emit spawn {actor, action:spawn, target:sandbox_id, decision:allow}
-    Run->>Run: snapshotBaseline → pristine baseline (work dir + payload.sh + fresh proxy, empty creds) [ADR 009]
+    Run->>Run: snapshotBaseline → pristine baseline (work dir + payload.sh + fresh proxy, empty creds) (ADR 009)
     loop for each secret_ref handle
         Run->>Vault: vault.inject(handle, sandbox_identity, mode)
         alt proxy-mode success
@@ -139,7 +139,7 @@ sequenceDiagram
     Proxy-->>Sbx: forwarded response (or 403 blocked-by-allowlist / 403 blocked-by-method / 502 no-route)
     Sbx-->>Run: stdout, stderr, exit_code
     Run->>Audit: emit exit {action:exit, exit_code, duration_ms}
-    Run->>Run: baseline.teardown() → RemoveAll(work) + Wipe() (one-shot terminal cleanup) [ADR 009]
+    Run->>Run: baseline.teardown() → RemoveAll(work) + Wipe() (one-shot terminal cleanup) (ADR 009)
     Run->>Proxy: Stop()
     Run-->>Agent: {stdout, stderr, exit_code, sandbox_status} on stdout
 ```
