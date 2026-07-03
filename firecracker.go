@@ -534,7 +534,7 @@ func copyOutWorkdir(image, hostDir string) {
 		return
 	}
 	defer os.RemoveAll(staging)
-	cmd := exec.Command(debugfs, "-R", "rdump / "+staging, image)
+	cmd := exec.Command(debugfs, "-R", fmt.Sprintf("rdump / %q", staging), image)
 	// debugfs emits non-fatal "Operation not permitted while changing ownership" warnings as an
 	// unprivileged user; the files are still extracted with the invoking uid + correct content. We
 	// ignore the exit status and sync whatever landed.

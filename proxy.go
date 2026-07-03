@@ -113,7 +113,7 @@ func (p *EgressProxy) handle(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no-route", http.StatusBadGateway)
 		return
 	}
-	out, err := http.NewRequest(r.Method, "http://"+origin[0]+":"+origin[1]+r.URL.Path, r.Body)
+	out, err := http.NewRequest(r.Method, "http://"+origin[0]+":"+origin[1]+r.URL.RequestURI(), r.Body)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return

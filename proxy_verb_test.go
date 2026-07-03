@@ -311,3 +311,32 @@ func TestSandboxUnconstrainedHostForwardsAllVerbs(t *testing.T) {
 		t.Fatalf("origin hits = %d, want 1 (unconstrained host forwards POST as before)", rec.count())
 	}
 }
+
+// A query string on an allowed request must reach the origin intact — the proxy forwards
+// the full request-URI, not just the path.
+func TestProxyForwardsQueryString(t *testing.T) {
+	var gotURI atomic.Value
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotURI.Store(r.URL.RequestURI())
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	ip, port, err := net.SplitHostPort(strings.TrimPrefix(srv.URL, "http://"))
+	if err != nil {
+		t.Fatalf("split origin URL: %v", err)
+	}
+
+	p := NewEgressProxy([]string{"api.example.com"}, nil,
+		map[string][2]string{"api.example.com": {ip, port}})
+
+	req := httptest.NewRequest("GET", "http://api.example.com/search?q=hello+world&page=2", nil)
+	req.Host = "api.example.com:443"
+	w := httptest.NewRecorder()
+	p.handle(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%q)", w.Code, w.Body.String())
+	}
+	if got := gotURI.Load(); got != "/search?q=hello+world&page=2" {
+		t.Fatalf("origin saw %v, want /search?q=hello+world&page=2", got)
+	}
+}

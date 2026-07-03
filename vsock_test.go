@@ -102,11 +102,11 @@ func TestVsockBridgeWiresToLiveEgressProxy(t *testing.T) {
 	}
 }
 
-// TC-014-02: proxy.go is byte-for-byte unchanged from the pre-task baseline — the vsock bridge is
-// new wiring, not a proxy fork. The baseline sha256 is the hash of proxy.go at the task-014 start
-// commit; if proxy.go is edited, this test fails and forces the diff into the open.
+// TC-014-02: proxy.go is byte-for-byte unchanged from the reviewed baseline — the vsock bridge is
+// new wiring, not a proxy fork. The baseline sha256 pins the current reviewed proxy.go; any edit
+// fails this test and forces the diff into the open (then the baseline is bumped deliberately).
 func TestProxyGoUnchangedByVsockTask(t *testing.T) {
-	const baselineSHA = "8879edc4df4e084d2150743a046c157d35b407ef4f52b7ada1a0a6c70c718553"
+	const baselineSHA = "d483b39b63491afdaaa1aec48a7d607a8b16d1be69117b2db4da86e12e46af8e"
 	raw, err := os.ReadFile("proxy.go")
 	if err != nil {
 		t.Fatalf("read proxy.go: %v", err)

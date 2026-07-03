@@ -665,7 +665,11 @@ func toStringList(v any) []string {
 
 func randHex(n int) string {
 	b := make([]byte, n)
-	rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		// Sandbox IDs and attestation nonces must never be predictable; a broken
+		// system RNG is not a state to continue in.
+		panic("crypto/rand: " + err.Error())
+	}
 	return hex.EncodeToString(b)
 }
 
