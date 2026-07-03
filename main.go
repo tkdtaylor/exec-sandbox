@@ -5,7 +5,7 @@
 // plugs credential injection into the proxy at spawn (proxy mode: value never enters the
 // sandbox).
 //
-// Contract (interface-contracts.md §2, v1):
+// Contract (docs/CONTRACT.md, v1):
 //
 //	run(payload, profile, tier, secret_refs) -> { stdout, stderr, exit_code, sandbox_status }
 //

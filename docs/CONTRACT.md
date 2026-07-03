@@ -1,7 +1,6 @@
 # exec-sandbox v1 contract
 
-Mirrors `interface-contracts.md §2`, validated by the
-tracer-bullet (A1/A2/A3).
+Validated by the ecosystem tracer-bullet (A1/A2/A3).
 
 ## run(payload, profile, tier, secret_refs) -> result
 ```

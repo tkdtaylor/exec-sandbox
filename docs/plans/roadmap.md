@@ -4,8 +4,7 @@ A tiered, risk-selected OS execution-isolation block: run untrusted agent-genera
 network, egress only through a credential-injecting host-side proxy, composed with vault (credential
 injection), policy-engine (risk → tier), and audit-trail (event emission).
 
-Authoritative design: the project's internal design notes.
-As-built foundational stack: [ADR 001](../architecture/decisions/001-foundational-stack.md).
+Authoritative contract: [docs/CONTRACT.md](../CONTRACT.md). As-built foundational stack: [ADR 001](../architecture/decisions/001-foundational-stack.md).
 
 ## v0 — Tier-1 isolation + egress proxy + vault.inject — ✅ shipped
 

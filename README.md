@@ -24,7 +24,7 @@ Answers one question: *when agent-generated code runs, is its execution boundary
 
 `exec-sandbox` is one block in a composable secure-agent ecosystem — each block is standalone and independently usable, and composes with its siblings over published contracts rather than absorbing their responsibilities (no central "god object").
 
-## Contract (interface-contracts.md §2, v1)
+## Contract ([docs/CONTRACT.md](docs/CONTRACT.md), v1)
 
 ```
 run(payload, profile, tier, secret_refs) -> { stdout, stderr, exit_code, sandbox_status }
