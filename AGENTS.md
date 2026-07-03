@@ -42,10 +42,9 @@ These are load-bearing — violating one breaks the security model, not just sty
 ## Contract (v1)
 
 `run(payload, profile, tier, secret_refs) -> {stdout, stderr, exit_code, sandbox_status}`.
-Authoritative spec: `exec-sandbox.md` +
-`interface-contracts.md` (v1). Validated by the tracer-bullet reference (A1–A3).
-Structured current-state snapshot: [`docs/spec/`](docs/spec/). Full contract reference:
-[`docs/CONTRACT.md`](docs/CONTRACT.md).
+Authoritative contract reference: [`docs/CONTRACT.md`](docs/CONTRACT.md) (v1).
+Validated by the tracer-bullet reference (A1–A3).
+Structured current-state snapshot: [`docs/spec/`](docs/spec/).
 
 ## Project structure
 
