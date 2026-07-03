@@ -1,96 +1,118 @@
-# exec-sandbox — OS execution isolation with tiered, risk-selected runtimes
+# exec-sandbox
 
-Answers one question: *when agent-generated code runs, is its execution boundary isolated from the host and from other sandboxes?* exec-sandbox runs the code in a sandbox with **no network**, and its **only** path out is a host-side egress proxy with a domain allowlist. [vault](https://github.com/tkdtaylor/vault) plugs credential injection into that proxy — in proxy mode the secret never enters the sandbox at all.
+[![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+[![Go version](https://img.shields.io/github/go-mod/go-version/tkdtaylor/exec-sandbox)](go.mod)
+[![Last commit](https://img.shields.io/github/last-commit/tkdtaylor/exec-sandbox)](https://github.com/tkdtaylor/exec-sandbox/commits)
 
-- **Tiered isolation** — Tier-1 `bwrap --unshare-all` (no network namespace; a direct connect returns curl `000`) and Tier-2 gVisor/`runsc` over a generated OCI bundle, selected per run by `tier` (ADR 002)
-- **exec-sandbox owns the network boundary** — `--network none` + egress proxy (Unix socket) + domain allowlist, narrowed by an optional **per-host HTTP-verb allowlist** (ADR 008)
-- **vault.inject at spawn** — pull-triggered push; presents `{handle, sandbox_identity}`, receives `{credential, binding}` (proxy) and injects it into allowlisted egress
-- **Per-run resource limits** — cpu / memory / pids / disk / wall-clock plus host-side stdout/stderr output caps enforced above the tier seam (ADR 003, ADR 007)
-- **Controlled host I/O** — optional writable `/work` dir, read-only `FileRead` mounts, and `env`/`PATH` provisioning (ADR 004, ADR 005)
-- **Leak-proof reset** — snapshot/restore returns the sandbox to a pristine baseline between runs (ADR 009)
-- **Audit emission** — spawn / inject / exit events to [audit-trail](https://github.com/tkdtaylor/audit-trail)
+**OS-level execution isolation for untrusted agent-generated code.** The payload runs
+in a sandbox with no network; its only egress is a host-side proxy with a domain
+allowlist and credential injection. Tiered isolation backends — bubblewrap (Tier 1)
+and gVisor (Tier 2) shipped; Firecracker (Tier 3) planned — all enforcing the same
+security boundary.
 
-> Prior-art verdict (from ecosystem prior-art scoping): **BUILD an open tiered orchestration harness** — adopt OCI runtimes (gVisor/Firecracker/Kata) as pluggable backends; derive Tier 1 from `@anthropic-ai/sandbox-runtime` (Apache-2.0). The value-add is the harness: policy→tier selection, vault credential injection, audit emission. **Language: Go** (bubblewrap/OCI/containerd ecosystem). **License: Apache-2.0.**
+It's built for **operators who need to isolate code execution** — one piece of the
+[Secure Agent Ecosystem](https://github.com/tkdtaylor/agent-builder#the-building-blocks) alongside vault,
+policy-engine, and audit-trail. Apache-2.0 licensed.
 
-## Scope
+> **Status.** Tier-1 (bubblewrap) and Tier-2 (gVisor) isolation shipped behind a stable
+> contract. Resource limits, writable `/work` dir, read-only mounts, vault credential
+> injection (proxy mode), audit emission, and per-host verb allowlists are wired. Tier-3
+> (Firecracker) is planned. See the [roadmap](docs/plans/roadmap.md) for filed tasks.
 
-**What exec-sandbox does:** OS-level execution isolation for agent-generated code — tiered namespaces/seccomp → gVisor → Firecracker, selected per run, owning the network egress boundary.
+## Contents
 
-**What it does *not* do (and which sibling owns it instead):**
-- Inspect LLM content — prompts, outputs, tool-calls → **[armor](https://github.com/tkdtaylor/armor)**
-- Store or own secret values — it *receives* them at the boundary at spawn → **vault**
-- Decide whether an action is permitted → **[policy-engine](https://github.com/tkdtaylor/policy-engine)**
-- Ship a standalone WASM / pre-compiled-tool sandbox — that is a *possible future tier here* (nested inside OS isolation, since WASM is not a standalone trust boundary), **not** a separate block; typed WASM tool *invocation* is an MCP-WASM interop concern, not ours to rebuild. See [ADR 012](docs/architecture/decisions/012-wasm-tool-isolation-scope.md).
+- [Quick start](#quick-start)
+- [How it works](#how-it-works)
+- [Isolation tiers](#isolation-tiers)
+- [Develop locally](#develop-locally)
+- [Tech stack](#tech-stack)
+- [Sponsorship](#sponsorship)
+- [Enterprise support](#enterprise-support)
+- [License](#license)
 
-`exec-sandbox` is one block in a composable secure-agent ecosystem — each block is standalone and independently usable, and composes with its siblings over published contracts rather than absorbing their responsibilities (no central "god object").
+## Quick start
 
-## Contract ([docs/CONTRACT.md](docs/CONTRACT.md), v1)
-
-```
-run(payload, profile, tier, secret_refs) -> { stdout, stderr, exit_code, sandbox_status }
-profile = { capabilities:[ NetConnect{allowlist}, FileRead{paths}, … ], limits:{cpu,mem,disk,timeout} }
-tier    = bubblewrap | gvisor | firecracker        # v0 implements bubblewrap
-```
-
-`secret_refs` carries opaque handles; exec-sandbox calls `vault.inject(handle,
-sandbox_identity, mode)` itself at the boundary. Validated by the tracer-bullet (A1/A2/A3).
-
-## Build & run
-
-```sh
-make build && go test ./...          # the integration tests need bubblewrap (skip if absent)
-echo '{"run":{"payload":"…","profile":{…},"tier":"bubblewrap","secret_refs":["…"]},
-       "wiring":{"vault_socket":"…","audit_socket":"…","origin_map":{…},"injection_mode":"proxy"}}' \
-  | ./bin/exec-sandbox run
+```bash
+git clone https://github.com/tkdtaylor/exec-sandbox && cd exec-sandbox
+go test ./...                    # tests (sandbox tests skip without bubblewrap)
 ```
 
-## Documentation
+The real interface — `exec-sandbox run` — reads a JSON `RunRequest` on stdin
+(containing the payload, isolation tier, resource limits, credential handles, and
+network allowlist) and writes a result JSON on stdout. To see it integrated into a
+working system, see [agent-builder](https://github.com/tkdtaylor/agent-builder), which
+uses it as the default execution backend.
 
-- [docs/architecture/overview.md](docs/architecture/overview.md) — system design and design principles
-- [docs/architecture/diagrams.md](docs/architecture/diagrams.md) — C4 diagrams and runtime flows
-- [docs/spec/SPEC.md](docs/spec/SPEC.md) — authoritative spec
-- [docs/plans/roadmap.md](docs/plans/roadmap.md) — roadmap and current status
+## How it works
 
-## Status
+You hand it untrusted code. A RunRequest specifies the payload, which tier to use, and
+the network allowlist (domain + per-host HTTP-verb restrictions). exec-sandbox spawns
+the sandbox, runs the payload, captures output and exit code, injects credentials at
+the egress proxy boundary (never into the sandbox), emits spawn/exit events to
+audit-trail, and returns the result. The sandbox has no network namespace; its only
+path out is the bind-mounted proxy socket.
 
-🚧 **v0 implementation, v1 contract.** Working Tier-1 bubblewrap **and** Tier-2 gVisor/`runsc` isolation behind the OCI seam + Unix-socket egress proxy + domain allowlist + per-host verb allowlist + per-run resource limits (cpu/mem/pids/disk/timeout/output) + writable `/work`, read-only `FileRead` mounts, env provisioning + snapshot/restore reset + vault.inject (proxy mode) + audit emission (ported from the tracer-bullet).
+```
+Payload → Tier 1 (bwrap) / Tier 2 (gVisor) / Tier 3 (Firecracker)
+          ↓
+          No network, /proxy.sock egress only
+          ↓
+          vault.inject(handle) at boundary (credential never in sandbox)
+          ↓
+          stdout/stderr captured, limits enforced
+          ↓
+          Result to audit-trail, returned to caller
+```
 
-See the [roadmap](docs/plans/roadmap.md) for filed/deferred work and known gaps. See also [docs/CONTRACT.md](docs/CONTRACT.md).
+The contract — `run(payload, profile, tier, secret_refs) → {stdout, stderr, exit_code,
+sandbox_status}` — is stable across all tiers. Add a new backend without touching the
+caller. Detailed architecture: [overview.md](docs/architecture/overview.md),
+[diagrams.md](docs/architecture/diagrams.md), and the [spec](docs/spec/SPEC.md).
 
-## Adapter seam & standards
+## Isolation tiers
 
-OCI Runtime Spec + Linux seccomp-BPF (+ WASI for a future WASM tier). Pluggable backends:
-bubblewrap (Tier 1, default), gVisor/runsc (Tier 2), Firecracker/Kata (Tier 3).
+| Tier | Backend | Status | Isolation | Overhead |
+|---|---|---|---|---|
+| 1 | bubblewrap + seccomp | Shipped | Namespaces + capability drop + syscall filter | ~5ms |
+| 2 | gVisor/`runsc` | Shipped | Userspace kernel + syscall interception | ~100ms |
+| 3 | Firecracker microVM | Planned | Hardware-assisted isolation (KVM) | ~200ms spawn |
 
-**Egress hardening (v1) — reference architecture:** the current egress is a single-layer
-Unix-socket HTTP proxy with a domain allowlist plus an optional per-host verb allowlist (the
-Tier-1 floor). For the v1 network-namespace
-egress filter, the reference is Alibaba **OpenSandbox OSEP-0001**'s two-layer default-deny
-model — Layer 1 DNS proxy (iptables `REDIRECT`), Layer 2 `nftables` filter, with graceful
-degradation to DNS-only when `CAP_NET_ADMIN` is unavailable (Apache-2.0). Evaluated as prior
-art: a **reference design, not an adopted dependency** (rejected for
-adoption — see ADR-011) — exec-sandbox stays a modular block (the OpenSandbox platform lacks
-pluggable policy-engine / external vault / separated audit-trail). See
-`exec-sandbox.md` §1.
+All shipped tiers enforce the same security model: no network namespace, domain
+allowlist on egress, per-host HTTP-verb restrictions, vault-injected credentials (never
+in sandbox), resource limits (cpu/mem/pids/disk/timeout), and output capping. Tier
+selection happens per run; the contract remains stable across all tiers.
 
-## License
+## Develop locally
 
-exec-sandbox is licensed under the **Apache License 2.0** — free to use, modify, and distribute, including in commercial and proprietary products. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+```bash
+make build          # go build -o bin/exec-sandbox ./...
+make test           # go test ./...
+make fmt            # go fmt ./...
+go test -run FitnessNoShareNet ./...      # run a specific fitness rule
+make fitness        # run all architectural fitness checks
+```
 
-> **Security notice:** exec-sandbox is a security tool provided **as-is, without warranty**. It does not guarantee the security of any system. See the disclaimer in [NOTICE](NOTICE).
+Contributing runs through a test-spec-first, one-task-one-branch workflow. Read
+[AGENTS.md](AGENTS.md) (the canonical, harness-neutral briefing) and
+[CONTRIBUTING.md](CONTRIBUTING.md) before starting; tasks and their specs live under
+[docs/tasks/](docs/tasks/).
 
-## Enterprise Support
+## Tech stack
 
-Need hardened deployments, integration help, or a support SLA? **Commercial support and consulting are available.**
-
-📧 Contact **[tools@taylorguard.me](mailto:tools@taylorguard.me)**
+Go 1.26 — single-binary CLI, standard library only, no third-party dependencies. External
+runtime dependencies: bubblewrap (Tier 1), gVisor/runsc (Tier 2), Firecracker (Tier 3).
+Integrates with vault and audit-trail over Unix-socket JSON-lines IPC.
 
 ## Sponsorship
 
-exec-sandbox is independent, open-source security tooling. If it saves you time or risk, consider sponsoring continued development:
+exec-sandbox is independent, open-source security tooling. If it saves you time or risk, [sponsoring its development](https://github.com/sponsors/tkdtaylor) is the most direct way to keep it maintained.
 
-- 💜 [GitHub Sponsors](https://github.com/sponsors/tkdtaylor)
+## Enterprise support
 
-## Contributing
+Commercial support, integration help, and SLAs are available. Apache-2.0 means you can build on exec-sandbox freely; paid support is a partner if you want one, never a requirement. Contact [tools@taylorguard.me](mailto:tools@taylorguard.me).
 
-Contributions are welcome and become part of the project under Apache-2.0. See [CONTRIBUTING.md](CONTRIBUTING.md). We use the **Developer Certificate of Origin (DCO)** — sign off your commits with `git commit -s`. No CLA required.
+## License
+
+[Apache License 2.0](LICENSE) — consistent with the Secure Agent Ecosystem. See
+[NOTICE](NOTICE) for attribution and disclaimers, and [CONTRIBUTING.md](CONTRIBUTING.md)
+for the inbound=outbound / DCO contribution terms.
