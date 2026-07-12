@@ -1,6 +1,6 @@
 # Task 020: attestation trust-root ADR (host ed25519 key, published trust root, vault consumer contract)
 
-**Status:** ⬜ backlog
+**Status:** 🟡 code merged (docs-only decision task)
 **Branch:** `task/020-attestation-trust-root-adr`
 **Spec:** [`docs/tasks/test-specs/020-attestation-trust-root-adr-test-spec.md`](../test-specs/020-attestation-trust-root-adr-test-spec.md)
 **ADR:** this task's deliverable IS the ADR. Next available number (017 at time of writing; re-check `ls docs/architecture/decisions/` first). It **amends ADR 014** through ADR 014's own reopening condition (2).
