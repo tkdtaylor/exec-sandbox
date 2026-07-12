@@ -1,7 +1,7 @@
 # Configuration
 
 **Project:** exec-sandbox
-**Last updated:** 2026-06-21 (task 017: Firecracker `run.workdir` → writable `/work` ext4 block-device drive (`/dev/vdc`, copy-in via `mkfs.ext4 -d`, copy-out at teardown via `debugfs rdump` — unprivileged); FileRead paths → read-only ext4 drives (`/dev/vdd…`); `debugfs` is a soft runtime dependency for copy-out; ADR 010 Q2 resolved to block device — see B-016) — task 016: profile.limits → Firecracker machine-config mapping — cpu_count→vcpu_count, memory_mb→mem_size_mib, disk_mb→writable-drive size, pids→in-guest RLIMIT_NPROC via setpriv; timeout/output stay host-side)
+**Last updated:** 2026-07-12 (task 021: `wiring.attestation_key` added, a host ed25519 signing key for host-signed attestation, fail-closed when configured-but-broken, ADR 017). Prior: 2026-06-21 (task 017: Firecracker `run.workdir` → writable `/work` ext4 block-device drive (`/dev/vdc`, copy-in via `mkfs.ext4 -d`, copy-out at teardown via `debugfs rdump` — unprivileged); FileRead paths → read-only ext4 drives (`/dev/vdd…`); `debugfs` is a soft runtime dependency for copy-out; ADR 010 Q2 resolved to block device — see B-016) — task 016: profile.limits → Firecracker machine-config mapping — cpu_count→vcpu_count, memory_mb→mem_size_mib, disk_mb→writable-drive size, pids→in-guest RLIMIT_NPROC via setpriv; timeout/output stay host-side)
 
 Every knob the system exposes. exec-sandbox has **no config files and reads no application
 environment variables** — all configuration arrives inside the stdin `RunRequest`. The tunable
@@ -46,6 +46,7 @@ wired into the surrounding ecosystem. They are part of the stdin `RunRequest`
 | `wiring.origin_map` | object `{host: [ip, port]}` | `{}` | no | Resolves allowlisted hosts to real origins. A host without a route returns `502 no-route`. |
 | `wiring.request_id` | string | `""` | no | Correlation id echoed into every audit event's context. |
 | `wiring.injection_mode` | string | `""` | no | Passed verbatim to `vault.inject` as `mode`. `"proxy"` keeps the secret out of the sandbox entirely (loaded onto the host-side proxy, injected into outbound requests). `"env"` delivers the secret into the sandbox process environment under the vault-specified `var_name`, off the spawn argv, and wipes the host-side copy post-spawn (ADR 015). |
+| `wiring.attestation_key` | string (path) | `""` | no | Host path to the PEM PKCS#8 ed25519 signing key for host-signed attestation (ADR 017). Set → `sandbox_identity` is host-signed (`attestation_format: "host-ed25519/v2"`, no pubkey), verifiable by vault against the operator-published trust root. Empty → transitional ADR 014 ephemeral self-attestation. A configured-but-broken key (missing/unreadable/malformed/non-ed25519, or file mode with group/other bits) is a hard `{error}` before any side effect (fail closed, no fallback). Wiring, not an env var or config file, because all configuration arrives in the `RunRequest`. |
 
 Execution-shaping fields under `run`:
 

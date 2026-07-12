@@ -1,6 +1,6 @@
 # Task 021: host-signed sandbox_identity attestation (implement the trust-root ADR)
 
-**Status:** ⬜ backlog
+**Status:** 🟡 code merged
 **Branch:** `task/021-signed-attestation-implementation`
 **Spec:** [`docs/tasks/test-specs/021-signed-attestation-implementation-test-spec.md`](../test-specs/021-signed-attestation-implementation-test-spec.md)
 **ADR:** the task-020 trust-root ADR (next available number, 017 at time of writing), written and committed by task 020 **before** this task starts. This task adds no new ADR; it implements that one. If the committed ADR deviates from any literal below, the ADR wins: reconcile the test spec first, then implement.
