@@ -35,7 +35,7 @@ dispatch point so higher tiers slot in **without changing the `run()` contract**
 |----|------|--------|
 | 009 | **Wire the fitness functions** — `fitness-<id>` + `fitness:` umbrella over the 9 block rules; author the 3 missing checks (F-001 bwrap argv, F-002 cred-leak, F-004 prefix bound); flip those `proposed → active`. | 📋 ready |
 | 010 | Terminal audit event on early proxy-start failure (resolves behaviors.md B-007 TODO). | 📋 ready |
-| 011 | Signed `sandbox_identity.attestation` (v0 uses random bytes). | ⚠️ blocked — needs an ADR (next available number) + vault-consumer-contract check (trust root: ephemeral ed25519 vs host-provided key) |
+| 011 | Signed `sandbox_identity.attestation` (v0 used random bytes). | ✅ done via ADR 014 (ephemeral ed25519 self-attestation). Host trust root now tracked by tasks 020 (ADR 017) + 021 (implementation). |
 | 012 | Env-mode credential injection + wipe clock (v0 wires proxy-mode only). | 📋 ready — confirm vault env-mode field names |
 | 019 | Full seccomp-BPF profile — Tier-1 default-deny cBPF baseline. | 📋 filed — needs a profile-design decision (allowlist scope, per-tier baseline) |
 
