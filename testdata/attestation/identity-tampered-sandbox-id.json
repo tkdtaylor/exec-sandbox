@@ -1,0 +1,9 @@
+{
+  "attestation": "becb203d0317742c2e966953cd20b54120b5b0c664004086554faa020da79c6cd93a707761ad31da6dfddc1cbb644336d73f4da6c6ae5f485fac2bf55765bd06",
+  "attestation_format": "host-ed25519/v2",
+  "created_at": "2026-07-12T00:00:00Z",
+  "nonce": "0123456789abcdef0123456789abcdef",
+  "profile_digest": "6d39b61626060496c37ef5edc021190baa31e79d3c3300b6705a0d6b9976b220",
+  "sandbox_id": "sbx-ffffff",
+  "tier": "bubblewrap"
+}

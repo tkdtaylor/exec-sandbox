@@ -32,11 +32,12 @@ type RunRequest struct {
 		Env        map[string]string `json:"env"`     // env exported into the sandbox; PATH replaces the bare default; empty → unchanged (ADR 005)
 	} `json:"run"`
 	Wiring struct {
-		VaultSocket   string               `json:"vault_socket"`
-		AuditSocket   string               `json:"audit_socket"`
-		OriginMap     map[string][2]string `json:"origin_map"`
-		RequestID     string               `json:"request_id"`
-		InjectionMode string               `json:"injection_mode"`
+		VaultSocket    string               `json:"vault_socket"`
+		AuditSocket    string               `json:"audit_socket"`
+		OriginMap      map[string][2]string `json:"origin_map"`
+		RequestID      string               `json:"request_id"`
+		InjectionMode  string               `json:"injection_mode"`
+		AttestationKey string               `json:"attestation_key"` // host path to the PEM PKCS#8 ed25519 signing key; "" → transitional self-attestation (ADR 017)
 	} `json:"wiring"`
 }
 
@@ -70,13 +71,26 @@ func Run(req RunRequest) map[string]any {
 	}
 
 	sandboxID := "sbx-" + randHex(6)
-	// Signed self-attestation (ADR 014): mint a fresh ephemeral ed25519 keypair, sign the canonical
-	// preimage of {sandbox_id, nonce, ts}, and carry the public key + signature in sandbox_identity.
-	// The signing PRIVATE key never leaves mintAttestation — it enters none of the result, audit
-	// events, sandbox env/args, payload, or stdout (mirrors the F-002 credential discipline).
-	sandboxIdentity, err := mintAttestation(sandboxID)
-	if err != nil {
-		return map[string]any{"error": "attestation mint failed: " + err.Error()}
+	// Attestation minting (ADR 017). Two modes, chosen by wiring.attestation_key:
+	//   - configured  → host-signed v2 attestation. The host key is loaded here, BEFORE any side
+	//     effect (spawn audit emit, proxy/snapshot start, vault.inject). A configured-but-broken key
+	//     (missing/unreadable/malformed/non-ed25519/too-permissive) is a hard {error} with NO silent
+	//     fallback to self-attestation (same pre-side-effect ordering as validateWorkdir/FileReads).
+	//   - unconfigured → transitional ADR 014 ephemeral self-attestation, byte-for-byte as before.
+	// In both modes the signing PRIVATE key never leaves the mint function: it enters none of the
+	// result, audit events, sandbox env/args, payload, or stdout (mirrors the F-002 discipline).
+	var sandboxIdentity map[string]any
+	if req.Wiring.AttestationKey != "" {
+		priv, keyErr := loadSigningKey(req.Wiring.AttestationKey)
+		if keyErr != nil {
+			return map[string]any{"error": "attestation signing key: " + keyErr.Error()}
+		}
+		sandboxIdentity = mintHostAttestation(priv, sandboxID, req.Run.Tier, req.Run.Profile)
+	} else {
+		sandboxIdentity, err = mintAttestation(sandboxID)
+		if err != nil {
+			return map[string]any{"error": "attestation mint failed: " + err.Error()}
+		}
 	}
 	emit(req.Wiring.AuditSocket, map[string]any{
 		"actor": "exec-sandbox", "action": "spawn", "target": sandboxID, "decision": "allow",

@@ -60,7 +60,11 @@ record are **identical** under bubblewrap and gVisor (the backend argv/OCI spec 
 cap). Missing/zero/non-positive ⇒ no cap (full output, `output_truncated: []`).
 
 ## vault.inject (called by exec-sandbox at spawn)
-Pull-triggered push: present `{handle, sandbox_identity}`. In proxy mode vault returns
+Pull-triggered push: present `{handle, sandbox_identity}`. When `wiring.attestation_key` is set,
+`sandbox_identity` is **host-signed** (`attestation_format: "host-ed25519/v2"`, seven keys, no pubkey)
+and vault verifies its ed25519 signature against the operator-published trust-root file (the same
+`attestation-trust-root.pub` passed to both binaries) over the v2 preimage (ADR 017); unset keeps the
+transitional ADR 014 self-attestation shape. In proxy mode vault returns
 `{credential, binding:{host,header,scheme}}`; exec-sandbox loads it into the egress proxy
 (never the sandbox). See vault's contract.
 

@@ -29,6 +29,14 @@ func main() {
 	if len(os.Args) >= 2 && os.Args[1] == "fc-launch" {
 		os.Exit(fcLaunchMain(os.Args[2:]))
 	}
+	// Attestation setup + oracle subcommands (ADR 017). keygen generates the host signing keypair;
+	// verify-attestation is vault's executable oracle over a trust root + an identity on stdin.
+	if len(os.Args) >= 2 && os.Args[1] == "keygen" {
+		os.Exit(keygenMain(os.Args[2:]))
+	}
+	if len(os.Args) >= 2 && os.Args[1] == "verify-attestation" {
+		os.Exit(verifyAttestationMain(os.Args[2:]))
+	}
 	if len(os.Args) < 2 || os.Args[1] != "run" {
 		fmt.Fprintln(os.Stderr, "usage: exec-sandbox run   (JSON RunRequest on stdin)")
 		os.Exit(2)

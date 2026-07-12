@@ -17,22 +17,26 @@ through them ([data-model.md](data-model.md)), how they're configured
 ### CLI
 
 ```
-exec-sandbox run     # reads a JSON RunRequest on stdin, writes a JSON result on stdout
+exec-sandbox run                          # reads a JSON RunRequest on stdin, writes a JSON result on stdout
+exec-sandbox keygen <dir>                 # generates the host attestation keypair (ADR 017)
+exec-sandbox verify-attestation <pub>     # verifies a host-signed identity (stdin) against a trust root
 ```
 
 | Subcommand / flag | Type | Default | Effect |
 |-------------------|------|---------|--------|
 | `run` | subcommand (positional, required) | — | The public subcommand. Reads a `RunRequest` from stdin, executes it, writes the result to stdout. |
+| `keygen <dir>` | subcommand | — | Generates one ed25519 keypair, writing `<dir>/attestation-signing.key` (PEM PKCS#8, mode 0600) and `<dir>/attestation-trust-root.pub` (PEM PKIX, mode 0644), refusing to overwrite either (ADR 017). Prints exactly two lines: `signing_key=<abs path>` and `trust_root=<abs path>`. |
+| `verify-attestation <trust-root.pub>` | subcommand | — | Reads one host-signed `sandbox_identity` JSON object on stdin and verifies it against the trust-root file (one or more concatenated PEM PKIX ed25519 `PUBLIC KEY` blocks). Prints `ok` on stdout when it verifies. This is vault's executable oracle (ADR 017). |
 | `fc-launch <bundle>` | subcommand (internal) | — | **Not a public surface.** The Firecracker backend re-execs the binary as `fc-launch <bundle>` (under `bwrap`) to drive the firecracker REST API and exit with the guest's exit code (B-015). Callers use `run`; `fc-launch` is the backend's own spawn target. |
-| stdin | JSON `RunRequest` | — | The request body for `run` (see [data-model.md](data-model.md)). |
-| stdout | JSON result | — | `{stdout, stderr, exit_code, sandbox_status}` or `{error}`. |
+| stdin | JSON `RunRequest` (`run`) / JSON `sandbox_identity` (`verify-attestation`) | — | The request body for `run`, or the identity to verify for `verify-attestation`. |
+| stdout | JSON result (`run`) / `ok` (`verify-attestation`) / key paths (`keygen`) | — | `{stdout, stderr, exit_code, sandbox_status}` or `{error}` for `run`. |
 
-There are no flags in v0 — all input is the stdin JSON.
+There are no flags in v0 — all input is the stdin JSON (plus the positional subcommand arguments above).
 
 **Exit codes (of the `exec-sandbox` process itself, distinct from the payload's `exit_code` field):**
-- `0` — request handled and result written (the payload's own exit code is reported inside the result JSON, not as the process exit code)
-- `1` — could not read stdin, or could not parse the `RunRequest` JSON
-- `2` — usage error (missing or unknown subcommand)
+- `0` — request handled and result written (`run`; the payload's own exit code is reported inside the result JSON, not as the process exit code), or `keygen`/`verify-attestation` succeeded (`verify-attestation` also prints `ok`)
+- `1` — `run`: could not read stdin or parse the `RunRequest` JSON; `keygen`: an output file already exists or could not be written; `verify-attestation`: the identity failed verification, or the trust root / stdin was unreadable or unparseable (reason on stderr)
+- `2` — usage error (missing or unknown subcommand, or wrong argument count for `keygen`/`verify-attestation`)
 
 > Note: a payload that exits non-zero still yields process exit `0` — the payload's exit code is carried in `result.exit_code`. The process only exits non-zero on input/usage errors.
 

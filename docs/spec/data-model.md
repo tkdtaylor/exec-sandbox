@@ -176,7 +176,7 @@ On an early failure (proxy could not start) the result is instead `{ "error": st
 ### Format: `vault.inject` request / response (Unix-socket JSON-line)
 
 - **Producer / consumer:** `vaultInject` (`run.go`) ⇄ vault.
-- **Request:** `{ "op": "inject", "handle": string, "sandbox_identity": {sandbox_id, nonce, ts, attestation_pubkey, attestation}, "mode": string }` — see `sandbox_identity` below for the signed-attestation shape.
+- **Request:** `{ "op": "inject", "handle": string, "sandbox_identity": {…}, "mode": string }`. `sandbox_identity` is the host-signed shape `{sandbox_id, tier, profile_digest, created_at, nonce, attestation_format, attestation}` when `wiring.attestation_key` is set, or the transitional self-attestation shape `{sandbox_id, nonce, ts, attestation_pubkey, attestation}` when it is unset. See `sandbox_identity` below for both.
 - **Response (proxy mode):** `{ "delivery": "proxy", "credential": string, "binding": { "host": string, "header": string, "scheme": string } }` — `header` defaults to `Authorization`, `scheme` to `Bearer` if absent. The `credential` value is loaded onto the host-side proxy and **never** enters the sandbox (env/args/stdout) — the F-002 data-invariant.
 - **Response (env mode):** `{ "delivery": "env", "credential": string, "var_name": string, "wiped_at": string }` — `credential` is the secret value, `var_name` the target env-var name inside the sandbox, `wiped_at` vault's own wipe-clock timestamp (vault-side bookkeeping; exec-sandbox does not persist it). The `credential` value is **delivered** into the sandbox process environment under `var_name` (ADR 015) — the deliberate, documented exception to the proxy-mode invariant — reaching the sandbox **off the spawn argv** (bwrap `--args FD` / gVisor OCI `process.env`) so it never lands in `/proc/<pid>/cmdline`. The host-side copy is held in one place (`EnvCredentials`) and wiped post-spawn and at teardown; no host copy survives the run. A response missing `var_name` is treated as an inject failure (no var delivered). The value never appears in the returned `result`, `sandbox_status`, or any audit event.
 - **Error:** a non-nil `error` field, a transport error, or (env mode) a missing `var_name` triggers an `inject_failed` audit event and the handle is skipped.
@@ -195,6 +195,52 @@ On an early failure (proxy could not start) the result is instead `{ "error": st
 
 ### `sandbox_identity`
 
+`sandbox_identity` has two shapes, chosen by whether `wiring.attestation_key` is configured (ADR 017).
+
+#### Host-signed (primary): `wiring.attestation_key` set
+
+```json
+{
+  "sandbox_id": "sbx-<6 hex bytes>",
+  "tier": "bubblewrap" | "gvisor" | "firecracker",
+  "profile_digest": "<64 lowercase hex>",
+  "created_at": "<RFC3339 UTC>",
+  "nonce": "<32 lowercase hex>",
+  "attestation_format": "host-ed25519/v2",
+  "attestation": "<128 lowercase hex = 64-byte ed25519 signature>"
+}
+```
+
+Minted per run by `mintHostAttestation` (`attestation.go`) with the operator's **long-lived host
+ed25519 signing key** loaded from `wiring.attestation_key` (ADR 017). The signature covers the
+canonical, length-prefixed v2 preimage of the five **attested fields**:
+
+```
+"exec-sandbox/attestation/v2\n" + LP(sandbox_id) + LP(tier) + LP(profile_digest) + LP(created_at) + LP(nonce)
+```
+
+where `LP(s)` is the 4-byte big-endian length of `s` followed by `s`'s bytes. `tier` is normalized
+(`""` maps to `"bubblewrap"`); `profile_digest` is the lowercase-hex sha256 of
+`json.Marshal(run.profile)` (a nil/absent profile digests the 4 bytes `null`); `created_at`
+(`time.Now().UTC().Format(RFC3339)`) and `nonce` (fresh `crypto/rand` 16 bytes, 32 hex) give
+freshness and replay resistance.
+
+- The identity carries **no `attestation_pubkey`**: the verify key is the operator-published trust
+  root, never the attacker-presentable identity.
+- **Verify:** the consumer (vault) loads the trust-root file (one or more concatenated PEM PKIX
+  `PUBLIC KEY` ed25519 blocks), rebuilds the v2 preimage from the attested fields, hex-decodes the
+  64-byte signature, and accepts iff `ed25519.Verify` passes under **any** trust-root key (try-each-key
+  rotation). `verifyHostAttestation` (`attestation.go`) and the `verify-attestation` subcommand
+  implement this; mint and verify share one `attestationPreimageV2` helper, so mutating any attested
+  field, the signature, or the format string breaks verification.
+
+The host **private key never leaves** `mintHostAttestation` (loaded via `loadSigningKey`, which fails
+closed on a missing/unreadable/malformed/non-ed25519 key or one whose mode carries group/other bits):
+it enters none of the result, audit events, sandbox env/args, payload, or stdout, and its file is not
+among the sandbox mounts (mirrors the F-002 discipline).
+
+#### Transitional self-attestation: `wiring.attestation_key` unset (`""`)
+
 ```json
 {
   "sandbox_id": "sbx-<6 hex bytes>",
@@ -205,30 +251,14 @@ On an early failure (proxy could not start) the result is instead `{ "error": st
 }
 ```
 
-Minted per run by `mintAttestation` (`attestation.go`) as a **signed self-attestation** (ADR 014).
-Each run generates a fresh ephemeral `crypto/ed25519` keypair and signs the canonical preimage of
-the **attested fields** `{sandbox_id, nonce, ts}`:
-
-```
-"exec-sandbox/attestation/v1\n" + LP(sandbox_id) + LP(nonce) + LP(ts)
-```
-
-where `LP(s)` is the 4-byte big-endian length of `s` followed by `s`'s bytes (length-prefixing
-removes field-boundary ambiguity). `nonce` (fresh `crypto/rand` 16 bytes) and `ts` give replay
-resistance.
-
-- **`attestation`** is the hex-encoded 64-byte ed25519 signature over that preimage.
-- **`attestation_pubkey`** is the hex-encoded 32-byte verify key — the **verify-key source**: the
-  consumer (vault) verifies internal consistency with the in-identity public key, since vault's
-  trust anchor is the uid-restricted socket + single-use handle binding, not a host key (ADR 014).
-- **Verify:** `verifyAttestation(identity)` (`attestation.go`) rebuilds the preimage from the
-  attested fields, decodes `attestation_pubkey` + `attestation`, and returns
-  `ed25519.Verify(pub, preimage, sig)`. Mint and verify share one `attestationPreimage` helper, so
-  mutating any attested field or the signature breaks verification.
-
-The signing **private key is ephemeral** and never leaves `mintAttestation` — it enters none of the
-result, audit events, sandbox env/args, payload, or stdout (mirrors the F-002 credential
-discipline); only the public key and signature are externally visible.
+When no host key is configured, `mintAttestation` (`attestation.go`) produces the ADR 014 ephemeral
+per-run self-attestation: a fresh `crypto/ed25519` keypair signs the v1 preimage
+`"exec-sandbox/attestation/v1\n" + LP(sandbox_id) + LP(nonce) + LP(ts)` and carries its **public key**
+in the identity, which `verifyAttestation` checks for internal consistency. This shape is
+**transitional** (its retirement condition: once host attestation is required ecosystem-wide, a
+follow-on task makes an unconfigured key a fail-closed error rather than a fallback). Vault
+distinguishes the two shapes by `attestation_format`: present and `"host-ed25519/v2"` is host mode;
+absent (with an `attestation_pubkey`) is the transitional self-attestation.
 
 ---
 
