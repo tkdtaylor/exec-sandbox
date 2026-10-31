@@ -1,68 +1,55 @@
-# Roadmap — exec-sandbox
+# Roadmap: exec-sandbox
 
-A tiered, risk-selected OS execution-isolation block: run untrusted agent-generated code with no
-network, egress only through a credential-injecting host-side proxy, composed with vault (credential
-injection), policy-engine (risk → tier), and audit-trail (event emission).
+A tiered, risk-selected OS execution-isolation block: run untrusted agent-generated code with no network, egress only through a credential-injecting host-side proxy, composed with vault (credential injection), policy-engine (risk → tier), and audit-trail (event emission).
 
 Authoritative contract: [docs/CONTRACT.md](../CONTRACT.md). As-built foundational stack: [ADR 001](../architecture/decisions/001-foundational-stack.md).
 
-## v0 — Tier-1 isolation + egress proxy + vault.inject — ✅ shipped
+## v0: Tier-1 isolation + egress proxy + vault.inject (✅ shipped)
 
-Working today (`main.go`/`run.go`/`proxy.go`): the `run(payload, profile, tier, secret_refs)`
-contract over stdin/stdout JSON; **bubblewrap `--unshare-all`** Tier-1 isolation (no network
-namespace); host-side Unix-socket egress proxy with a domain allowlist; `vault.inject` at spawn
-(proxy and env modes); `spawn`/`inject`/`exit` audit emission. Tier-1 only; the `tier` field accepts
-`bubblewrap|gvisor|firecracker` but only `bubblewrap` is wired.
+The foundational implementation (`main.go`, `run.go`, `proxy.go`): the `run(payload, profile, tier, secret_refs)` contract over stdin/stdout JSON; bubblewrap `--unshare-all` Tier-1 isolation (no network namespace); host-side Unix-socket egress proxy with a domain allowlist; `vault.inject` at spawn (proxy and env modes); and `spawn`/`inject`/`exit` audit emission.
 
-## v1 — Tiered runtimes behind the OCI seam + contract hardening
+## v1: Tiered runtimes behind the OCI seam + contract hardening (✅ shipped)
 
-The v0→v1 work, each item a self-contained task. The tier seam (now `backendFor(tier)`) is the
-dispatch point so higher tiers slot in **without changing the `run()` contract**.
+The v0→v1 work, extending isolation behind the `backendFor(tier)` dispatch point without changing the `run()` contract. All three isolation tiers, host-side limits, reset boundaries, seccomp filtering, and host-key attestation are shipped and verified.
 
-### Shipped
-
-| Work | Status |
-|------|--------|
-| **Tier 2: gVisor (`runsc`) backend** behind the `tier` seam — `tier=="gvisor"` runs via runsc OCI, same contract, same no-network + proxy-only egress + audit. | ✅ task 001, ADR-002 |
-| Enforce `profile.limits` (cpu/mem/pids/disk/timeout) + output caps. | ✅ tasks 002/006, ADR-003/007 |
-| Writable `/work` mount + toolchain mount/PATH + env provisioning. | ✅ tasks 003/004, ADR-004/005 |
-| Per-host verb allowlist on the egress proxy. | ✅ task 007, ADR-008 |
-| Snapshot/restore pristine-baseline reset boundary. | ✅ task 008, ADR-009 |
-
-### Planned — filed in `docs/tasks/backlog/` (test-spec-first, ready to pick up)
+### Shipped tasks
 
 | ID | Work | Status |
 |----|------|--------|
-| 009 | **Wire the fitness functions** — `fitness-<id>` + `fitness:` umbrella over the 9 block rules; author the 3 missing checks (F-001 bwrap argv, F-002 cred-leak, F-004 prefix bound); flip those `proposed → active`. | 📋 ready |
-| 010 | Terminal audit event on early proxy-start failure (resolves behaviors.md B-007 TODO). | 📋 ready |
-| 011 | Signed `sandbox_identity.attestation` (v0 used random bytes). | ✅ done via ADR 014 (ephemeral ed25519 self-attestation). Host trust root now tracked by tasks 020 (ADR 017) + 021 (implementation). |
-| 012 | Env-mode credential injection + wipe clock (v0 wires proxy-mode only). | 📋 ready — confirm vault env-mode field names |
-| 019 | Full seccomp-BPF profile — Tier-1 default-deny cBPF baseline. | 📋 filed — needs a profile-design decision (allowlist scope, per-tier baseline) |
+| 001 | Tier 2: gVisor (`runsc`) backend behind the `tier` seam (OCI bundle, no-network, proxy-only egress). | ✅ task 001, ADR 002 |
+| 002 | Enforce `profile.limits` (cpu, mem, pids, disk, timeout) on bubblewrap and gVisor. | ✅ task 002, ADR 003 |
+| 003 | Writable `/work` working-directory mount on bubblewrap and gVisor. | ✅ task 003, ADR 004 |
+| 004 | `FileRead` read-only host mounts and payload PATH/env provisioning. | ✅ task 004, ADR 005 |
+| 006 | Per-run stdout and stderr output caps (`profile.limits.max_output_bytes`). | ✅ task 006, ADR 007 |
+| 007 | Per-host HTTP-verb allowlist enforcement in the egress proxy. | ✅ task 007, ADR 008 |
+| 008 | Snapshot and restore pristine-baseline reset boundary. | ✅ task 008, ADR 009 |
+| 009 | Wire fitness functions: `fitness-<id>` targets and `fitness:` umbrella (F-001 through F-010). | ✅ task 009 |
+| 010 | Terminal audit event on early proxy-start failure. | ✅ task 010, ADR 013 |
+| 011 | Signed `sandbox_identity` attestation (ephemeral ed25519 self-attestation). | ✅ task 011, ADR 014 |
+| 012 | Env-mode credential injection and wipe clock. | ✅ task 012, ADR 015 |
+| 013 | Firecracker Tier-3 dispatch and config-generator skeleton (no-NIC by construction). | ✅ task 013, ADR 010 |
+| 014 | Firecracker no-NIC and vsock-bridge egress enforcement. | ✅ task 014, ADR 010 |
+| 015 | Firecracker guest boot, kernel and rootfs, direct launch without jailer. | ✅ task 015, ADR 010 Amendments 1 and 2 |
+| 016 | Firecracker `profile.limits` machine-config mapping. | ✅ task 016, ADR 010 |
+| 017 | Firecracker `/work` and `FileRead` mount semantics. | ✅ task 017, ADR 010 |
+| 018 | Firecracker teardown, fitness functions, and spec sync. | ✅ task 018, ADR 010 |
+| 019 | Tier-1 seccomp-BPF default-deny syscall profile (`seccomp/tier1.bpf`). | ✅ task 019, ADR 016 |
+| 020 | Attestation trust-root design for host-signed tokens. | ✅ task 020, ADR 017 |
+| 021 | Host-signed `sandbox_identity` attestation (`keygen`, `verify-attestation`, `wiring.attestation_key`). | ✅ task 021, ADR 017 |
+| 022 | Reconcile README and roadmap drift with shipped Tier 3 and v2 attestation. | ✅ task 022 |
 
-### Planned — Tier 3 Firecracker epic (ADR-010, dependency-ordered 013 → 018)
-
-| ID | Work | Status |
-|----|------|--------|
-| 013 | Firecracker tier dispatch + config-generator skeleton (no-NIC by construction; no VMM launch). | 📋 ready — epic root |
-| 014 | No-NIC + vsock-bridge egress enforcement (the egress crux; credential never enters the guest). | 📋 ready after 013 — target L6 |
-| 015 | Guest boot: kernel image + rootfs + **direct firecracker launch (no jailer)**. | 📋 ready after 013/014 — Q1+Q3 resolved (ADR-010 Amendment 1): build-from-source pinned kernel/rootfs; no jailer, unprivileged firecracker under bwrap (`kvm` group, no root) |
-| 016 | `profile.limits` → microVM machine-config mapping. | 📋 ready after 013/015 |
-| 017 | `/work` + FileRead mount semantics in the microVM. | ⚠️ Q2 (mount mechanism) — small in-task decision |
-| 018 | Teardown + spec/diagram sync + no-`network-interface` fitness function. | 📋 ready after 013–017 |
-
-### Future — deferred, not yet filed (need a scoping decision/ADR before a task file)
+### Future and deferred (unscheduled)
 
 | Work | Disposition |
 |------|-------------|
-| HTTPS via `CONNECT` (TLS-terminated end-to-end through the egress proxy). | **TRACKED GAP** — the genuine egress gap (host allowlist preserved via the bare host in the `CONNECT` line; credential injection N/A once the client TLS-terminates). Deferred; revisit when an HTTPS-origin workload needs it (ADR-011). |
-| Egress hardening: two-layer DNS-proxy + `nftables` (OpenSandbox **OSEP-0001** reference). | **DROP (ADR-011)** — no-network-by-construction dominates filter-an-existing-route and fails closed; OSEP-0001 filters a route exec-sandbox does not have. Retained as cited prior art only. |
-| SOCKS5 proxy (alongside the HTTP egress proxy). | **DROP (ADR-011)** — incompatible with credential injection (opaque TCP has nowhere to splice the secret) and imports the SOCKS5 hostname-canonicalization bypass bug class. HTTPS via `CONNECT` is the real gap, tracked separately above. |
-| Tier 4: Hyperlight (micro-isolate). | **KEEP-WATCHING (strengthened)** — promotion trigger is Hyperlight **1.0** OR `agent-framework-hyperlight` **CodeAct GA** (ADR-006, 2026-06-20 reassessment). |
-| Warm-pool / snapshot reuse (ADR-009 Q2/Q3). | **DEFER** — snapshot/restore is built and proven leak-free, but the reuse trigger + pool sizing + eviction are undesigned. |
-| Secrets refresh/rotation during a run (v0 injects once at spawn). | **DEFER** — lower priority; revisit after env-mode (012) lands. |
+| HTTPS via `CONNECT` and dynamic DNS in `EgressProxy`. | **TRACKED GAP**: genuine egress gap (host allowlist preserved via bare host in `CONNECT` line; credential injection N/A once client TLS-terminates). Deferred until an HTTPS-origin workload requires it (ADR 011). |
+| Warm microVM pools and snapshot reuse. | **DEFER**: host-side snapshot and restore is built and proven leak-free, but microVM pool sizing, reuse triggers, and eviction are undesigned (ADR 009, ADR 010). |
+| Firecracker `env`-mode credential delivery. | **DEFER**: Firecracker currently supports `proxy`-mode credential delivery over vsock; delivering secrets into guest env requires guest-side injection mechanics. |
+| Egress hardening: two-layer DNS-proxy + `nftables` (OpenSandbox **OSEP-0001** reference). | **DROP (ADR 011)**: no-network-by-construction dominates filter-an-existing-route and fails closed; OSEP-0001 filters a route exec-sandbox does not have. Retained as cited prior art only. |
+| SOCKS5 proxy (alongside HTTP egress proxy). | **DROP (ADR 011)**: incompatible with credential injection (opaque TCP has nowhere to splice secret) and imports SOCKS5 hostname-canonicalization bypass bugs. HTTPS via `CONNECT` is the real gap, tracked separately above. |
+| Tier 4: Hyperlight (micro-isolate). | **KEEP-WATCHING**: promotion trigger is Hyperlight **1.0** or `agent-framework-hyperlight` **CodeAct GA** (ADR 006, 2026-06-20 reassessment). |
+| Secrets refresh and rotation during a run. | **DEFER**: lower priority; revisit when long-running workflows demand mid-flight secret rotation. |
 
 ## Notes for the orchestrator
 
-This repo is built out one task at a time by **agent-builder**: it reads this roadmap +
-`docs/tasks/backlog/NNN-*.md`, builds the next ready task in a sandbox, runs the verification gate,
-and opens a PR. The working v0 source is not rewritten — v1 work extends it behind the tier seam.
+This repo is built out one task at a time by **agent-builder**: it reads this roadmap and `docs/tasks/backlog/NNN-*.md`, builds the next ready task in a sandbox, runs the verification gate, and opens a PR. The working v0 source is not rewritten; v1 work extends it behind the tier seam.

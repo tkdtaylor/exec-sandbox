@@ -2,7 +2,7 @@
 
 **Project:** exec-sandbox
 **Created:** 2026-10-31
-**Status:** ready
+**Status:** completed
 
 ## Goal
 
@@ -35,9 +35,9 @@ Update `README.md` and `docs/plans/roadmap.md` so they accurately reflect the sh
 
 ## Acceptance criteria
 
-- [ ] [REQ-022-01] TC-022-01: `README.md` documents all three tiers (`bubblewrap`, `gvisor`, `firecracker`) and v2 host-key attestation (`keygen`, `verify-attestation`) as shipped.
-- [ ] [REQ-022-02] TC-022-02: `docs/plans/roadmap.md` marks tasks 009 through 021 as completed.
-- [ ] [REQ-022-03] TC-022-03: `go test -race ./...` and `make check` pass.
+- [x] [REQ-022-01] TC-022-01: `README.md` documents all three tiers (`bubblewrap`, `gvisor`, `firecracker`) and v2 host-key attestation (`keygen`, `verify-attestation`) as shipped.
+- [x] [REQ-022-02] TC-022-02: `docs/plans/roadmap.md` marks tasks 009 through 021 as completed.
+- [x] [REQ-022-03] TC-022-03: `go test -race ./...` and `make check` pass.
 
 ## Verification plan
 

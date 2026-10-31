@@ -1,4 +1,4 @@
-.PHONY: build test fmt clean \
+.PHONY: build test fmt clean check \
 	fitness \
 	fitness-no-share-net fitness-cred-not-in-sandbox fitness-no-deps \
 	fitness-handle-prefix fitness-limits fitness-only-workdir \
@@ -14,6 +14,7 @@ fmt:
 	go fmt ./...
 clean:
 	rm -rf bin
+check: test fitness
 
 # ---------------------------------------------------------------------------
 # Fitness functions — F-001..F-010 (task 009)
