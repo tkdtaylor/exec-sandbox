@@ -8,7 +8,7 @@ payload = shell script run as /payload.sh
 profile = { capabilities:[ {type:NetConnect, allowlist:["host:443"], methods:["GET",…]},  # methods optional; absent/[] ⇒ all verbs
                             {type:FileRead, paths:[…]}, … ],
             limits:{ cpu_count, memory_mb, pids, disk_mb, timeout_sec, max_output_bytes } }   # enforced — see below
-tier    = bubblewrap | gvisor | firecracker        # bubblewrap + gvisor wired; firecracker → "tier not implemented"
+tier    = bubblewrap | gvisor | firecracker        # bubblewrap, gvisor, and firecracker all wired
 secret_refs = [ handle ]                            # opaque; exec-sandbox calls vault.inject
 workdir = host path                                 # optional; "" → no mount (see below)
 env     = { KEY: value }                            # optional; PATH replaces the bare default; {} → unchanged (see below)
@@ -56,7 +56,7 @@ enforced **host-side, above the `tier` seam**: `Run()` captures each of stdout/s
 capping writer that retains at most `max_output_bytes` bytes per stream and **drops** the overflow
 without erroring the payload's pipe (its exit is unchanged). stdout/stderr are capped
 **independently** at the same ceiling; the truncated length + the `sandbox_status.limits.output_truncated`
-record are **identical** under bubblewrap and gVisor (the backend argv/OCI spec are unchanged by the
+record are **identical** under bubblewrap, gVisor, and Firecracker (the backend argv/OCI spec/microVM config are unchanged by the
 cap). Missing/zero/non-positive ⇒ no cap (full output, `output_truncated: []`).
 
 ## vault.inject (called by exec-sandbox at spawn)

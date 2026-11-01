@@ -46,7 +46,7 @@ C4Container
     System_Boundary(boundary, "exec-sandbox process") {
         Container(cli, "exec-sandbox run", "Go / main package", "Reads RunRequest on stdin, orchestrates the run, writes result on stdout")
         Container(proxy, "Egress proxy", "Go / net/http on a Unix socket", "Domain allowlist + credential injection; the sandbox's only path out")
-        Container(sandbox, "isolation sandbox", "bwrap --unshare-all | runsc (gVisor)", "Runs payload.sh with no network namespace; /proxy.sock bind-mounted in. Optional run.workdir bind-mounted read-write at /work (cwd=/work); optional FileRead paths bind-mounted read-only at the same path; run.env provisions PATH/env. Tier selected by run.tier.")
+        Container(sandbox, "isolation sandbox", "bwrap --unshare-all / runsc / Firecracker", "Runs payload.sh with no network namespace; /proxy.sock bind-mounted or vsock-bridged in. Optional run.workdir mounted read-write at /work (cwd=/work); optional FileRead paths mounted read-only at the same path; run.env provisions PATH/env. Tier selected by run.tier.")
     }
 
     System_Ext(vault, "vault")
@@ -57,7 +57,7 @@ C4Container
     Rel(cli, vault, "vault.inject", "Unix socket")
     Rel(cli, audit, "emit", "Unix socket")
     Rel(cli, proxy, "Starts, loads credentials, stops/wipes", "in-process")
-    Rel(cli, sandbox, "Runs payload, captures stdout/stderr/exit", "exec bwrap | runsc")
+    Rel(cli, sandbox, "Runs payload, captures stdout/stderr/exit", "exec bwrap | runsc | firecracker")
     Rel(sandbox, proxy, "Outbound HTTP (only egress)", "Unix socket /proxy.sock")
     Rel(proxy, origin, "Forwards allowlisted request with injected credential", "HTTP")
 ```
@@ -74,9 +74,11 @@ C4Component
         Component(main, "main", "main.go", "CLI entry: parse argv, read stdin RunRequest, call Run(), write result")
         Component(run, "Run()", "run.go", "Orchestration: allowlist parse, identity mint, audit emit, vault.inject loop, proxy start, backend exec, result assembly")
         Component(seam, "backendFor / Backend", "run.go", "Tier seam: selects bubblewrapBackend (bwrapArgv), gvisorBackend, or firecrackerBackend by run.tier; unknown tier → error")
+        Component(seccomp, "loadTier1Seccomp", "seccomp.go", "Loads and validates pinned cBPF default-deny syscall filter for bubblewrap (ADR 016)")
         Component(gvisor, "gvisorBackend / gvisorOCISpec", "gvisor.go", "Builds an OCI bundle (empty netns, /proxy.sock only egress) and the runsc run argv")
         Component(firecracker, "firecrackerBackend / firecrackerConfig / fcLaunch", "firecracker.go / fclaunch.go / fcartifacts.go", "Verifies the pinned kernel+rootfs (sha256, fail-fast), builds the per-run bundle + payload drive + writable /work drive (/dev/vdc, copy-in mkfs.ext4 -d, copy-out at teardown via debugfs) + read-only FileRead drives (/dev/vdd…); validateDriveReadOnly guards exactly one writable drive. Starts the vsock bridge, launches firecracker DIRECTLY under bwrap --unshare-all (no jailer; constraints ≥ jailer). fc-launch drives the REST API in order (no network-interfaces) and exits with the guest exit code; configHasNoNIC guard. The cleanup func (defer path in Run) is the teardown (D5): copy /work back → stop the vsock bridge → reap any surviving firecracker process scoped to this run's bundle → remove the bundle — no guest/socket/bundle outlives the run, on every exit path")
         Component(vsockbridge, "vsockBridge + guestShim", "vsockbridge.go / vsockshim.go", "Host bridge forwards the vsock uds_path to the live EgressProxy; dumb guest-side byte pump presents /proxy.sock in the microVM (guest /proxy.sock shim → vsock → host EgressProxy — the only egress). No HTTP/secret/allowlist logic in the shim (B-014)")
+        Component(attest, "attestation & keygen", "attestation.go / keygen.go", "Host-ed25519/v2 signing and verification oracle, Ed25519 keypair generation (ADR 017)")
         Component(ipc, "ipcCall / vaultInject / emit", "run.go", "Unix-socket JSON-lines IPC to vault and audit-trail")
         Component(snapshot, "sandboxBaseline / restore", "snapshot.go", "Snapshot/restore reset boundary: pristine per-run baseline, one-shot teardown, leak-proof restore (ADR 009)")
         Component(egress, "EgressProxy", "proxy.go", "Host + per-host verb allowlist enforcement + credential injection on a Unix socket")
@@ -87,9 +89,11 @@ C4Component
 
     Rel(main, run, "Invokes", "Run(req)")
     Rel(run, seam, "Selects backend by tier", "backendFor(tier)")
+    Rel(seam, seccomp, "loads cBPF filter for bwrap")
     Rel(seam, gvisor, "gvisor tier", "Backend.Argv")
     Rel(seam, firecracker, "firecracker tier", "Backend.Argv")
     Rel(vsockbridge, egress, "Forwards vsock bytes to the live proxy", "Unix socket")
+    Rel(run, attest, "sign host attestation for vault.inject (ADR 017)")
     Rel(run, ipc, "vault.inject / emit", "")
     Rel(run, snapshot, "snapshotBaseline / teardown / restore", "")
     Rel(run, egress, "NewEgressProxy / SetCredential / Start / Stop / Wipe", "")
@@ -113,7 +117,7 @@ sequenceDiagram
     participant Run as exec-sandbox Run()
     participant Vault as vault
     participant Proxy as Egress proxy
-    participant Sbx as isolation sandbox (bwrap or runsc)
+    participant Sbx as isolation sandbox (bwrap, runsc, or firecracker)
     participant Audit as audit-trail
 
     Agent->>Run: RunRequest {payload, profile, tier, secret_refs} on stdin
@@ -132,8 +136,8 @@ sequenceDiagram
     end
     Run->>Run: validateWorkdir(run.workdir) + validateFileReads(FileRead paths) (bad path → error, no run)
     Run->>Proxy: Start(proxy.sock)
-    Run->>Run: backendFor(tier) → bubblewrap or gvisor (unknown → error)
-    Run->>Sbx: exec backend (bwrap --unshare-all, or runsc over an OCI bundle, payload.sh + /proxy.sock bind-mounted, no network, run.workdir → /work rw cwd=/work, FileRead paths → ro mounts, run.env → PATH/env)
+    Run->>Run: backendFor(tier) → bubblewrap, gvisor, or firecracker (unknown → error)
+    Run->>Sbx: exec backend (bwrap, runsc, or firecracker, payload + proxy socket/vsock, no network, run.workdir → /work rw, FileRead paths → ro mounts, run.env → PATH/env)
     Sbx->>Proxy: outbound HTTP via /proxy.sock (only egress)
     Proxy->>Proxy: host allowlist check, then per-host verb check (ADR 008), inject credential
     Proxy-->>Sbx: forwarded response (or 403 blocked-by-allowlist / 403 blocked-by-method / 502 no-route)

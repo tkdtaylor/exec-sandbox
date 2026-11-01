@@ -52,7 +52,7 @@ survives the process.
   "run": {
     "payload":     string,            // shell script run as payload.sh
     "profile":     object,            // capabilities + limits; see below
-    "tier":        string,            // "bubblewrap" | "gvisor" wired; "firecracker" → tier not implemented
+    "tier":        string,            // "bubblewrap" (Tier 1), "gvisor" (Tier 2), and "firecracker" (Tier 3) all wired
     "secret_refs": [ string ],        // opaque vault handles
     "workdir":     string,            // optional host dir → bind-mounted rw at /work, cwd=/work; "" → no mount
     "env":         { string: string } // env exported into the sandbox; "PATH" replaces the bare default; {} → unchanged

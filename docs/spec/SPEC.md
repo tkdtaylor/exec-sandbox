@@ -51,9 +51,9 @@ single-binary Go CLI (`exec-sandbox run`) that reads a JSON `RunRequest` on stdi
 supplied agent-generated payload in a sandbox with **no network**. The sandbox's only path out
 is a host-side egress proxy on a Unix socket that enforces a domain allowlist and injects
 credentials obtained from `vault`. In proxy mode the credential value never enters the sandbox.
-spawn/inject/exit events are emitted to `audit-trail`. Two isolation tiers are wired behind a
-`tier` seam — Tier-1 bubblewrap (`bwrap`), Tier-2 gVisor (`runsc`), and Tier-3 Firecracker
-(`firecracker`, a KVM microVM) — all enforcing the same no-network + proxy-only-egress invariant.
+spawn/inject/exit events are emitted to `audit-trail`. Three isolation tiers are wired behind a
+`tier` seam: Tier-1 bubblewrap (`bwrap`), Tier-2 gVisor (`runsc`), and Tier-3 Firecracker
+(`firecracker`, a KVM microVM), all enforcing the same no-network + proxy-only-egress invariant.
 The seam keeps the `run()` contract stable across tiers.
 
 ## Top-level invariants

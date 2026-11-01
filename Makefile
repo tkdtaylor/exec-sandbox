@@ -17,17 +17,16 @@ clean:
 check: test fitness
 
 # ---------------------------------------------------------------------------
-# Fitness functions — F-001..F-010 (task 009)
+# Fitness functions: F-001..F-014 (13 block-severity rules + F-003 warn)
 # TC-009-01: every block-rule fitness-<id> target exists and is invokable
 # TC-009-02: fitness-no-deps (F-003, warn) target exists and is invokable
-# TC-009-03: the fitness: umbrella runs all 9 block rules and passes on current main
-# TC-009-04: the umbrella EXCLUDES F-003 (warn) — fitness-no-deps is NOT a prerequisite
-# TC-009-11: F-005..F-010 targets wrap the spec's declared go test -run commands verbatim
-# TC-009-12: spec status flipped to active for F-001/F-002/F-004 (see docs/spec/fitness-functions.md)
+# TC-009-03: the fitness: umbrella runs all 13 block rules and passes on current main
+# TC-009-04: the umbrella EXCLUDES F-003 (warn): fitness-no-deps is NOT a prerequisite
 # ---------------------------------------------------------------------------
-# The fitness: umbrella runs EXACTLY the 9 block-severity rules (F-001, F-002,
-# F-004..F-010).  F-003 (warn) is intentionally excluded: a warn-severity rule
-# must never fail the umbrella.  fitness-no-deps is a standalone target.
+# The fitness: umbrella runs EXACTLY the 13 block-severity rules:
+# F-001, F-002, F-004..F-014. F-003 (warn) is intentionally excluded: a
+# warn-severity rule must never fail the umbrella. fitness-no-deps is a
+# standalone target.
 # ---------------------------------------------------------------------------
 
 fitness: fitness-no-share-net fitness-cred-not-in-sandbox fitness-handle-prefix \

@@ -176,7 +176,7 @@ returns an empty map (no-op).
 ## Extension points
 
 - **Isolation backends** plug in behind the `tier` seam (`backendFor(tier)` in `Run()`), modeled on
-  the OCI Runtime Spec. Bubblewrap (Tier 1) and gVisor/runsc (Tier 2) are wired; Firecracker
-  (Tier 3) returns `tier not implemented`. (ADR-001 D7, ADR-002)
+  the OCI Runtime Spec. Bubblewrap (Tier 1), gVisor/runsc (Tier 2), and Firecracker (Tier 3) are
+  all wired. (ADR-001 D7, ADR-002, ADR-010)
 - **Otherwise: extension is by source modification** — there is no plugin registry. The IPC
   contracts (vault/audit) are the integration points with the rest of the ecosystem.

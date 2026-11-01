@@ -33,7 +33,9 @@ When the structure changes, both files update in the same commit.
 | vault | External | Mints/binds credentials; serves `vault.inject` over a Unix socket | secure-agent ecosystem block |
 | audit-trail | External | Receives spawn/inject/exit audit events over a Unix socket | secure-agent ecosystem block |
 | Allowlisted origin | External | The real HTTP service an allowlisted host resolves to (via `origin_map`) | Third party |
-| bubblewrap (`bwrap`) | External (runtime tool) | Provides the Tier-1 sandbox; invoked as a subprocess | Upstream OSS |
+| bubblewrap (`bwrap`) | External (runtime tool) | Provides Tier-1 sandbox isolation; invoked as a subprocess | Upstream OSS |
+| gVisor (`runsc`) | External (runtime tool) | Provides Tier-2 OCI sandbox isolation; invoked as a subprocess | Upstream OSS |
+| Firecracker (`firecracker`) | External (runtime tool) | Provides Tier-3 microVM sandbox isolation; invoked as a subprocess | Upstream OSS |
 
 ---
 
@@ -59,13 +61,15 @@ When the structure changes, both files update in the same commit.
 | exec-sandbox CLI | `Run()` | `run.go` | Orchestration core: allowlist parse, identity mint, audit emit, baseline snapshot, vault.inject loop, proxy start, backend exec, result assembly, teardown | `backendFor`, `snapshotBaseline`, `vaultInject`, `emit`, `EgressProxy` |
 | exec-sandbox CLI | `backendFor` / `Backend` | `run.go` | Tier seam: select `bubblewrapBackend`, `gvisorBackend`, or `firecrackerBackend` by `run.tier`; unknown tier → `tier not implemented` error | `bwrapArgv`, `gvisorBackend`, `firecrackerBackend` |
 | exec-sandbox CLI | `bwrapArgv` | `run.go` | Build the Tier-1 bubblewrap argv (`--unshare-all`, no network namespace) | bubblewrap |
+| exec-sandbox CLI | `loadTier1Seccomp` | `seccomp.go` | Load and sha256-verify the pinned cBPF default-deny syscall filter for Tier-1 bubblewrap (ADR 016) | bubblewrap |
 | exec-sandbox CLI | `gvisorBackend` / `gvisorOCISpec` | `gvisor.go` | Build the Tier-2 OCI bundle (empty netns, `/proxy.sock` only egress) and the `runsc run` argv | gVisor (`runsc`) |
 | exec-sandbox CLI | `firecrackerBackend` / `firecrackerConfig` | `firecracker.go` | Build the Tier-3 microVM config (no `network-interface` — no-NIC by omission) + payload drive; verify the pinned kernel/rootfs; return the bwrap-wrapped `fc-launch` argv (no jailer) | `loadGuestArtifacts`, `startVsockBridge`, firecracker (`firecracker`) + `/dev/kvm` |
 | exec-sandbox CLI | `fcLaunchMain` / `driveFirecrackerAPI` / `streamConsole` | `fclaunch.go` | In-bwrap launcher: spawn firecracker, drive the REST API in order (no `network-interfaces`), parse the console for guest stdout + the exit sentinel, exit with the guest exit code | firecracker REST socket |
 | exec-sandbox CLI | `loadGuestArtifacts` / `verifyPinnedDigest` | `fcartifacts.go` | Resolve + sha256-verify the vendored pinned guest kernel + rootfs before boot; fail fast on mismatch | `guest/kernel/`, `guest/rootfs/` |
 | exec-sandbox CLI | `vsockBridge` / `guestShim` | `vsockbridge.go` / `vsockshim.go` | Host vsock bridge forwards the vsock uds to the live `EgressProxy`; dumb guest-side byte pump presents `/proxy.sock` in the microVM (B-014) | `EgressProxy` |
+| exec-sandbox CLI | `keygen` / `verifyAttestation` / `signAttestation` | `keygen.go` / `attestation.go` | Ed25519 keypair generation, trust root bundle verification, and host-ed25519/v2 attestation signing (ADR 017) | (std only) |
 | exec-sandbox CLI | `ipcCall` / `vaultInject` / `emit` | `run.go` | Unix-socket JSON-lines IPC to vault and audit-trail | vault, audit-trail |
-| exec-sandbox CLI | `netAllowlist` | `run.go` | Parse the egress allowlist from `profile.capabilities[NetConnect]` | — |
+| exec-sandbox CLI | `netAllowlist` | `run.go` | Parse the egress allowlist from `profile.capabilities[NetConnect]` | (std only) |
 | exec-sandbox CLI | `sandboxBaseline` / `snapshotBaseline` / `restore` | `snapshot.go` | Snapshot/restore reset boundary: build the pristine per-run baseline (work dir + `payload.sh` + fresh proxy), one-shot `teardown`, and leak-proof `restore` to a clean slate (ADR 009) | `EgressProxy` |
 | Egress proxy | `EgressProxy` | `proxy.go` | Host + per-host verb allowlist enforcement, credential injection, request forwarding, credential wipe | Allowlisted origin |
 

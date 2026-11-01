@@ -25,7 +25,7 @@ Behaviors are numbered `B-001`, … sequentially. Numbers are stable references 
 - **Trigger:** `exec-sandbox run` receives a JSON `RunRequest` on stdin with a `run.payload`.
 - **Response:** writes `req.run.payload` to a `payload.sh` (mode 0600) in a fresh temp dir, selects the isolation backend by `run.tier` (see B-008), then runs the payload under that backend with a minimal read-only root (`/usr`, `/etc`, conditionally `/bin /lib /lib64 /sbin`), `/proc`, `/dev`, a `/tmp` tmpfs, `PATH=/usr/bin:/bin`, the payload bind-mounted read-only as `/payload.sh`, and the egress proxy socket bind-mounted as `/proxy.sock` — with **no network namespace regardless of tier**. When `run.workdir` is set, the named host directory is additionally bind-mounted **read-write** at `/work` and becomes the payload's cwd (see B-010); otherwise there is no `/work` mount. For the bubblewrap tier this is `bwrap --seccomp <fd> --unshare-all --die-with-parent --clearenv` — the `--seccomp` flag installs a default-deny syscall profile (see B-013); for the gvisor tier it is `runsc run` over a generated OCI bundle whose spec declares an empty network namespace (see B-008). Captures stdout, stderr, and exit code. Returns a JSON result `{stdout, stderr, exit_code, sandbox_status}` on stdout.
 - **Side effects:** the temp dir and its contents (payload, proxy socket; for gvisor also the OCI bundle in its own temp dir) are created and removed (the one-shot `baseline.teardown()` → `os.RemoveAll(work)` + `proxy.Wipe()`, plus the backend cleanup func); spawn and exit audit events are emitted (see B-004).
-- **Failure modes:** if the selected runtime (`bwrap` or `runsc`) fails to start (e.g. binary absent or non-exec error), `exit_code` is set to `127` and the error string is appended to stderr. If the runtime exits non-zero, that exit code is propagated. An unrecognized tier returns `{error: "tier not implemented: <tier>"}` without running anything (see B-008).
+- **Failure modes:** if the selected runtime (`bwrap`, `runsc`, or `firecracker`) fails to start (e.g. binary absent or non-exec error), `exit_code` is set to `127` and the error string is appended to stderr. If the runtime exits non-zero, that exit code is propagated. An unrecognized tier returns `{error: "tier not implemented: <tier>"}` without running anything (see B-008).
 - **References:** ADR-001 D2/D3, ADR-002; `run.go` `Run` / `backendFor` / `bwrapArgv`; `gvisor.go`.
 
 ### B-002: Enforce the egress allowlist and route through the proxy
@@ -158,11 +158,11 @@ Behaviors are numbered `B-001`, … sequentially. Numbers are stable references 
 
 ### B-006: Reject invalid invocation or unparseable request
 
-- **Trigger:** the binary is invoked without the `run` subcommand, or stdin is not a valid `RunRequest` JSON, or stdin cannot be read.
-- **Response:** missing/unknown subcommand prints `usage: exec-sandbox run …` to stderr and exits `2`. A stdin read error or a JSON parse error prints the error to stderr and exits `1`.
+- **Trigger:** the binary is invoked without a supported subcommand (`run`, `keygen`, or `verify-attestation`, plus internal `fc-launch`), or stdin for `run` is not a valid `RunRequest` JSON, or stdin cannot be read.
+- **Response:** missing or unknown subcommand prints usage to stderr and exits `2`. A stdin read error or a JSON parse error on `run` prints the error to stderr and exits `1`. Subcommands `keygen` and `verify-attestation` handle attestation keypair generation and verification.
 - **Side effects:** none (no sandbox is started, no audit emitted).
 - **Failure modes:** this *is* the failure path.
-- **References:** `main.go`.
+- **References:** `main.go`, `keygen.go`, `attestation.go`.
 
 ### B-007: Fail fast if the egress proxy cannot start
 

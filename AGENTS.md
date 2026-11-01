@@ -23,9 +23,9 @@ It runs untrusted agent-generated code with **no network**; the only egress is a
 credential-injecting proxy on a Unix socket. Go. Apache-2.0.
 
 It is a single-binary Go CLI: `exec-sandbox run` reads a JSON `RunRequest` on stdin
-and writes a JSON result on stdout. v0 implements **Tier-1 isolation (bubblewrap)
-only**, behind a `tier` seam wired to accept `gvisor` and `firecracker` in later
-versions without changing the `run()` contract.
+and writes a JSON result on stdout. All three isolation tiers are shipped:
+**Tier-1 bubblewrap**, **Tier-2 gVisor**, and **Tier-3 Firecracker**, behind a `tier` seam
+that preserves the `run()` contract across backends.
 
 ## Invariants
 
@@ -49,13 +49,23 @@ Structured current-state snapshot: [`docs/spec/`](docs/spec/).
 ## Project structure
 
 ```
-main.go       ← CLI entrypoint — `exec-sandbox run` reads a JSON RunRequest from stdin
-run.go        ← Run() orchestration: allowlist parse → snapshot → vault.inject → proxy → backend → audit
-proxy.go      ← host-side egress proxy (Unix socket, domain + per-host verb allowlist, credential injection)
-gvisor.go     ← Tier-2 gVisor/runsc backend: OCI bundle/spec generation behind the tier seam
-limits.go     ← profile.limits parsing + host-side output-cap writer (cpu/mem/pids/disk/timeout/output)
-snapshot.go   ← snapshot/restore reset boundary: pristine per-run baseline, teardown, leak-proof restore
-*_test.go     ← integration + unit tests (sandbox tests skip when bwrap is absent)
+main.go          ← CLI entrypoint: `exec-sandbox run` reads a JSON RunRequest from stdin; keygen and verify-attestation subcommands
+run.go           ← Run() orchestration: allowlist parse → snapshot → vault.inject → proxy → backend → audit
+proxy.go         ← host-side egress proxy (Unix socket, domain + per-host verb allowlist, credential injection)
+gvisor.go        ← Tier-2 gVisor/runsc backend: OCI bundle/spec generation behind the tier seam
+firecracker.go   ← Tier-3 Firecracker microVM backend: microVM config, drive construction, launch under bwrap
+fclaunch.go      ← internal fc-launch entrypoint: in-bwrap REST API driver and console capture
+fcartifacts.go   ← pinned guest kernel and rootfs resolver and sha256 integrity verifier
+vsockbridge.go   ← host-side vsock bridge forwarding vsock UDS traffic to the live EgressProxy
+vsockshim.go     ← guest-side vsock proxy shim providing /proxy.sock in microVM
+keygen.go        ← host Ed25519 keypair generation and trust-root bundle management
+attestation.go   ← host-ed25519/v2 attestation signing and verification oracle
+seccomp.go       ← Tier-1 bubblewrap seccomp-BPF filter loader and validator
+guest/           ← pinned Firecracker guest assets (kernel, rootfs, shim)
+seccomp/         ← build-time cBPF filter generator and pinned filter blob
+limits.go        ← profile.limits parsing + host-side output-cap writer (cpu/mem/pids/disk/timeout/output)
+snapshot.go      ← snapshot/restore reset boundary: pristine per-run baseline, teardown, leak-proof restore
+*_test.go        ← integration + unit tests (sandbox tests skip when bwrap is absent)
 docs/         ← spec + planning + history (the source-of-truth side)
   CONTRACT.md     v1 contract reference (mirrors the ecosystem's v1 interface contract §2)
   spec/           authoritative current-state snapshot — SPEC.md, behaviors, architecture, data-model, interfaces, configuration, fitness-functions
@@ -78,8 +88,8 @@ means one of them is wrong; fix it in the same change.
 
 Go 1.26 (module `github.com/tkdtaylor/exec-sandbox`). Standard library only — no third-party
 dependencies (`net/http`, `os/exec`, `encoding/json`, `crypto/rand`). External runtime
-dependency: `bwrap` (bubblewrap) for Tier-1 isolation. vault and audit-trail are reached over
-Unix-socket JSON-lines IPC.
+dependencies: `bwrap` (bubblewrap) for Tier-1, `runsc` (gVisor) for Tier-2, and `firecracker`
+for Tier-3 microVMs. vault and audit-trail are reached over Unix-socket JSON-lines IPC.
 
 ## Commands
 
